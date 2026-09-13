@@ -107,7 +107,7 @@ export function ClaudeContextMeter({ useClaudeProjection, t }: ClaudeContextMete
 
   // The Host's meter reads the same window and draws the same ring from a
   // composition it cannot see for this preset; for as long as this one is
-  // mounted, that one stands down.
+  // mounted, that one stands down and this one takes its seat in the row.
   useEffect(() => {
     if (!available) return undefined
     document.body.dataset.dshClaudeContextMeter = ''
@@ -140,6 +140,7 @@ export function ClaudeContextMeter({ useClaudeProjection, t }: ClaudeContextMete
         data-dsh-claude-context-trigger=""
         style={open ? { ...styles.contextMeterTrigger, ...styles.contextMeterTriggerOpen } : styles.contextMeterTrigger}
         aria-label={t('contextAria', { percent: `${percent}%` })}
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(value => !value)}
       >

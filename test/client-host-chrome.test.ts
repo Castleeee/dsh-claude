@@ -29,12 +29,30 @@ describe('host chrome suppression', () => {
   })
 
   it('stands the Host context meter down only while a Claude meter is on screen', () => {
-    expect(HOST_CHROME_CSS).toContain('body[data-dsh-claude-context-meter] [class*="ContextMeter_root"]{display:none}')
-    // Every rule that touches the Host meter must be gated on the flag, so a
-    // session this plugin does not own keeps the Host's own meter.
+    // The Host renders that meter from the composer rather than through a slot,
+    // so it is matched twice: by the emitted class of the build this was written
+    // against, and by the ring it draws (a 14px viewBox inside its own dialog
+    // trigger). Either match is enough to remove it.
+    expect(HOST_CHROME_CSS).toContain('body[data-dsh-claude-context-meter] [class*="_trailing"]:has(>[class$="_primary"])>[class*="JdJrwG_root"]{display:none}')
+    expect(HOST_CHROME_CSS).toContain('svg[width="14"][height="14"]>circle[cx="7"]')
+    // That structural match must not catch this plugin's own ring, which draws
+    // the same geometry — without the `:not()` it would hide itself.
+    expect(HOST_CHROME_CSS).toContain('span:not([data-dsh-claude-context-meter])')
+    // Every rule that touches the Host meter or the row it sits in must be gated
+    // on the flag, so a session this plugin does not own keeps the Host's own
+    // meter.
     for (const rule of HOST_CHROME_CSS.split('}').map(part => part.trim()).filter(Boolean)) {
-      if (rule.includes('ContextMeter_root')) expect(rule.startsWith('body[data-dsh-claude-context-meter]')).toBe(true)
+      if (rule.includes('JdJrwG_root') || rule.includes('_trailing')) expect(rule.startsWith('body[data-dsh-claude-context-meter]')).toBe(true)
     }
+  })
+
+  it('leaves this plugin its ring in the seat the Host meter held', () => {
+    // The slot anchor around the ring is `display:contents`, so the ring is a
+    // flex item of the composer's row: `order` puts it straight after the model
+    // seat and straight before the submit buttons, which is where the Host's
+    // meter sat.
+    expect(HOST_CHROME_CSS).toContain('[class*="_trailing"]:has(>[class$="_primary"]) [data-dsh-claude-context-meter]{order:1}')
+    expect(HOST_CHROME_CSS).toContain('[class*="_trailing"]:has(>[class$="_primary"])>[class$="_primary"]{order:2}')
   })
 
   it('restores the slack the tab row used to give the divider', () => {
