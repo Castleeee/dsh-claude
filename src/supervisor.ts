@@ -49,7 +49,8 @@ export const MAX_STEERED_PROMPTS_PER_TURN = 16
 
 /** What {@link ClaudeSupervisor.deliverSteering} did with one steered message. */
 export type ClaudeSteeringOutcome = 'delivered' | 'unavailable'
-
+/** What {@link ClaudeSupervisor.stopTask} did with one stop request. */
+export type ClaudeStopTaskOutcome = 'stopped' | 'unavailable'
 /** The steering entry point this package publishes on the Cordis service named
  *  by `CLAUDE_STEERING_SERVICE`. */
 export interface ClaudeSteeringService {
@@ -539,6 +540,43 @@ export class ClaudeSupervisor {
     active.ownedPromptUuids.add(uuid)
     entry.input.push(sdkUserMessage(prompt, uuid))
     return 'delivered'
+  }
+
+  /** Tasks this session's live process reported, newest board state first read
+   *  by the caller. Empty for a session with no process to ask. */
+  tasks(sessionId: string): readonly ClaudeTaskInfo[] {
+    const entry = this.#entries.get(sessionId)
+    return entry === undefined || entry.state === 'disposed' ? [] : [...entry.tasks.values()]
+  }
+
+  /** Stop one background task — a detached shell or a subagent — that this
+   *  session's live process owns.
+   *
+   *  Claude keeps such work running across turns, and the CLI's own way to end
+   *  one is a keyboard path a browser does not have. The CLI answers with a
+   *  `task_notification` that settles the board; the board is settled here as
+   *  well, so a notification the CLI decides not to send cannot leave a stopped
+   *  task looking alive. A turn parked waiting on background work resumes on
+   *  the same signal it would have used had the task ended by itself.
+   *
+   *  `unavailable` means there is nothing to stop: no process, a task id this
+   *  process never reported, or a task that already settled. */
+  async stopTask(sessionId: string, taskId: string): Promise<ClaudeStopTaskOutcome> {
+    const entry = this.#entries.get(sessionId)
+    if (entry === undefined || entry.state === 'disposed' || entry.state === 'starting') return 'unavailable'
+    const task = entry.tasks.get(taskId)
+    if (task === undefined || task.status !== 'running') return 'unavailable'
+    try {
+      await entry.query.stopTask(taskId)
+    } catch {
+      // The CLI could not reach the task: leave the board as it was rather than
+      // reporting an ending that did not happen.
+      return 'unavailable'
+    }
+    entry.tasks.set(taskId, { ...task, status: 'stopped' })
+    await this.#scheduleTasksSnapshot(entry, true)
+    await this.#continueAfterTasks(entry)
+    return 'stopped'
   }
 
   runTurn(request: ClaudeTurnRequest): Promise<AsyncIterable<ClaudeTurnStreamEvent>> {
