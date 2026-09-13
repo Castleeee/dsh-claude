@@ -207,6 +207,25 @@ async function projectConversation(events: readonly unknown[]): Promise<TestProj
 }
 
 describe('Claude sidecar conversation projection', () => {
+  it('shows the states a reader has to act on, and not the progress pings', () => {
+    // A cancelled turn and a pending question are the two states the user has to
+    // see: without them an interrupt looks like it was ignored, and a question
+    // looks like Claude is still thinking. The pings around them stay hidden.
+    const activities: ClaudeActivityEvent[] = [
+      { turn: 1, step: 1, ordinal: 0, kind: 'status', phase: 'started', title: 'Claude Code turn started' },
+      { turn: 1, step: 1, ordinal: 1, kind: 'status', phase: 'completed', title: 'Claude Code requesting' },
+      { turn: 1, step: 1, ordinal: 2, kind: 'question', phase: 'started', title: 'Claude asked a question', summary: 'Which theme?' },
+      { turn: 1, step: 1, ordinal: 3, kind: 'status', phase: 'updated', title: 'Claude Code is waiting for background tasks' },
+      { turn: 1, step: 1, ordinal: 4, kind: 'status', phase: 'failed', title: 'Claude Code turn cancelled' },
+      { turn: 1, step: 1, ordinal: 5, kind: 'status', phase: 'completed', title: 'Claude Code turn completed' },
+    ]
+    expect(lifecycleRows(activities, 1, 1).map(row => row.activity.title)).toEqual([
+      'Claude asked a question',
+      'Claude Code is waiting for background tasks',
+      'Claude Code turn cancelled',
+    ])
+  })
+
   it('folds a task call, its nested subagent calls, and its result into one group entry', () => {
     const items = transcriptItemsForStep([taskCall, nestedStarted, nestedDone, taskDone], 2, 1)
     expect(items).toHaveLength(1)

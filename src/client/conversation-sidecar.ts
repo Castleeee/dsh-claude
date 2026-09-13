@@ -109,6 +109,17 @@ export function presentable(activity: ClaudeActivityEvent): boolean {
       return true
     case 'thinking':
       return activity.summary !== undefined && activity.summary.length > 0
+    case 'question':
+      // A question is a state the reader has to act on, so the transcript keeps
+      // both halves of it: that Claude asked, and that it got an answer.
+      return true
+    case 'status':
+      // Most status rows are progress pings — a turn starting, a request being
+      // issued — that the transcript deliberately keeps out. Two kinds are
+      // states a reader has to see: a turn that ended badly (cancelled, failed
+      // before submission, cancelled with its process reset) and one holding for
+      // background work before it can finish.
+      return activity.phase === 'failed' || activity.phase === 'updated'
     default:
       // 'compaction' stays out of the disclosure rows on purpose: the
       // transcript draws it as a divider instead, in `transcriptItemsForStep`.
