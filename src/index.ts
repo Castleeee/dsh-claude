@@ -58,6 +58,7 @@ export const inject = ['llm', 'agents', 'agentPresets', 'commands', 'subprocess'
 // service name to look up, and the shape it can rely on.
 export { CLAUDE_STEERING_SERVICE } from './constants.ts'
 export type { ClaudeSteeringOutcome, ClaudeSteeringService } from './supervisor.ts'
+import { ClaudeProcessLimitError, ClaudeTurnBusyError } from './supervisor.ts'
 
 export interface Config {
   executablePath?: string
@@ -119,6 +120,14 @@ export function mountClaudeMetadata(
     ctx.logger.warn(`dsh-claude: ${area} refresh failed for ${String(agent.id)}: ${error instanceof Error ? error.message : String(error)}`)
   }
 
+  /** A session that is mid-turn (or a process pool with no free slot) is not a
+   *  failed refresh — it is a refresh that has to wait. The metadata lane
+   *  deliberately refuses to disturb a running turn, and the idle transition
+   *  that follows it runs this again, so warning and retrying here would fill
+   *  the log for the whole length of every long turn. */
+  const deferrable = (error: unknown): boolean =>
+    error instanceof ClaudeTurnBusyError || error instanceof ClaudeProcessLimitError
+
   const isScopeUnavailable = (error: unknown): boolean => {
     if (error instanceof Error) return error.message === CLAUDE_SCOPE_UNAVAILABLE_MESSAGE
     return String(error) === CLAUDE_SCOPE_UNAVAILABLE_MESSAGE
@@ -159,6 +168,7 @@ export function mountClaudeMetadata(
         delete diagnostic.lastError
       } catch (error) {
         diagnostic.lastError = error instanceof Error ? error.message : String(error)
+        if (deferrable(error)) return
         warn('command catalog', error)
         if (!stopped && catalogRetries < MAX_CATALOG_RETRIES) {
           catalogRetries += 1
@@ -187,7 +197,7 @@ export function mountClaudeMetadata(
         const usage = await supervisor.contextUsage(agent, model)
         if (!stopped) await sidecar.writeContextUsage(agent.id as string, usage)
       } catch (error) {
-        warn('context usage', error)
+        if (!deferrable(error)) warn('context usage', error)
       }
 
       if (stopped) return
@@ -197,7 +207,7 @@ export function mountClaudeMetadata(
         const plan = await supervisor.planUsage(agent, model)
         if (!stopped) recordPlanUsage(normalizePlanUsage(plan, Date.now()))
       } catch (error) {
-        warn('plan usage', error)
+        if (!deferrable(error)) warn('plan usage', error)
       }
     })
   }
