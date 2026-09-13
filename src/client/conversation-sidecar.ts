@@ -115,11 +115,16 @@ export function presentable(activity: ClaudeActivityEvent): boolean {
       return true
     case 'status':
       // Most status rows are progress pings — a turn starting, a request being
-      // issued — that the transcript deliberately keeps out. Two kinds are
+      // issued — that the transcript deliberately keeps out. Three kinds are
       // states a reader has to see: a turn that ended badly (cancelled, failed
-      // before submission, cancelled with its process reset) and one holding for
-      // background work before it can finish.
-      return activity.phase === 'failed' || activity.phase === 'updated'
+      // before submission, cancelled with its process reset), one holding for
+      // background work before it can finish, and a row that carries an
+      // identity the reader asked for — their own mid-turn message, or a hook
+      // running inside the turn, neither of which leaves any other trace.
+      return activity.phase === 'failed'
+        || activity.phase === 'updated'
+        || activity.commandUuid !== undefined
+        || activity.hookId !== undefined
     default:
       // 'compaction' stays out of the disclosure rows on purpose: the
       // transcript draws it as a divider instead, in `transcriptItemsForStep`.
@@ -162,6 +167,10 @@ function foldKey(
   if (value.kind === 'subagent' && value.parentToolUseId !== undefined) return `task-${value.parentToolUseId}`
   if (value.kind === 'subagent' && value.taskId !== undefined) return `subagent-task-${value.taskId}`
   if (value.kind === 'subagent' && value.toolUseId !== undefined) return `call-${value.toolUseId}`
+  // A prompt or a hook reports a lifecycle, so its later frames re-describe the
+  // one row it opened rather than stacking a row per state.
+  if (value.commandUuid !== undefined) return `cmd-${value.commandUuid}`
+  if (value.hookId !== undefined) return `hook-${value.hookId}`
   return `act-${value.turn}-${value.step}-${value.ordinal}`
 }
 

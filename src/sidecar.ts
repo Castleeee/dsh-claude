@@ -19,7 +19,7 @@ import {
   type ClaudeTaskInfo,
   type ClaudeTasksEvent,
 } from './events.ts'
-import { CLAUDE_ACTIVITY_EVENT, CLAUDE_PROGRESS_SUBTYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, SDK_VERSION, claudeStatusTitle, type ClaudeRenderMode } from './constants.ts'
+import { CLAUDE_ACTIVITY_EVENT, CLAUDE_PROGRESS_SUBTYPES, CLAUDE_SETTLED_MESSAGE_TYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, SDK_VERSION, claudeStatusTitle, type ClaudeRenderMode } from './constants.ts'
 import {
   EMPTY_REWIND_STATE,
   MAX_REWIND_ANCHORS,
@@ -182,17 +182,20 @@ export function parseClaudeSidecar(value: unknown): ClaudeSidecarProjection {
   }
   const activities = input.activities.map(activity)
   if (activities.some(item => item === undefined)) throw new Error('dsh-claude: invalid sidecar activity')
-  // Pruned on the way in: progress telemetry is not evidence, and an unknown-type
-  // notice is evidence worth one row per type rather than the batch the CLI sends.
-  // A projection written before either rule existed still carries those rows, so
-  // this is where they stop costing anything. Sorting keeps the canonical order
-  // every later write assumes. All of it runs once per document read, not once per
-  // write: `#update` no longer re-parses the projection it already holds.
+  // Pruned on the way in: progress telemetry is not evidence, an unknown-type
+  // notice is evidence worth one row per type rather than the batch the CLI
+  // sends, and a notice about a type this package has since learned is stale.
+  // A projection written before any of those rules existed still carries those
+  // rows, so this is where they stop costing anything. Sorting keeps the
+  // canonical order every later write assumes. All of it runs once per document
+  // read, not once per write: `#update` no longer re-parses the projection it
+  // already holds.
   const retained: ClaudeActivityEvent[] = []
   const reportedUnknownTypes = new Set<string>()
   for (const item of activities as ClaudeActivityEvent[]) {
     if (isProgressActivity(item)) continue
     if (item.kind === 'warning' && item.title?.startsWith(CLAUDE_UNKNOWN_MESSAGE_PREFIX) === true) {
+      if (CLAUDE_SETTLED_MESSAGE_TYPES.has(item.title.slice(CLAUDE_UNKNOWN_MESSAGE_PREFIX.length))) continue
       if (reportedUnknownTypes.has(item.title)) continue
       reportedUnknownTypes.add(item.title)
     }

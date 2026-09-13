@@ -59,6 +59,13 @@ export interface ClaudeActivityEvent {
   /** Claude task-board identity for lifecycle activity; never a transcript path. */
   taskId?: string
   toolUseId?: string
+  /** Prompt identity a command-lifecycle row belongs to: the uuid this host put
+   *  on the message the CLI accepted. One row per prompt, updated in place. */
+  commandUuid?: string
+  /** One hook invocation, folded across its start and its response. */
+  hookId?: string
+  hookName?: string
+  hookEvent?: string
   /** Enclosing Claude tool call for subagent-nested activity. */
   parentToolUseId?: string
   toolName?: string
@@ -207,6 +214,10 @@ export function normalizeActivity(
   if (activity.phase !== undefined) normalized.phase = activity.phase
   if (activity.taskId !== undefined) normalized.taskId = redactText(activity.taskId, 128)
   if (activity.toolUseId !== undefined) normalized.toolUseId = redactText(activity.toolUseId, 256)
+  if (activity.commandUuid !== undefined) normalized.commandUuid = redactText(activity.commandUuid, 128)
+  if (activity.hookId !== undefined) normalized.hookId = redactText(activity.hookId, 128)
+  if (activity.hookName !== undefined) normalized.hookName = redactText(activity.hookName, 256)
+  if (activity.hookEvent !== undefined) normalized.hookEvent = redactText(activity.hookEvent, 128)
   if (activity.parentToolUseId !== undefined) normalized.parentToolUseId = redactText(activity.parentToolUseId, 256)
   if (activity.toolName !== undefined) normalized.toolName = redactText(activity.toolName, 256)
   if (activity.title !== undefined) normalized.title = redactText(activity.title, MAX_SUMMARY_CHARS)

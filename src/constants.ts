@@ -19,7 +19,15 @@ export const SDK_VERSION = '0.3.247'
  *  tens of thousands of them. The transcript never draws a plain status row,
  *  and each durable row costs a full sidecar rewrite, so these are consumed as
  *  progress and kept out of the activity log. */
-export const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(['thinking_tokens'])
+export const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(['thinking_tokens', 'hook_progress'])
+
+/** Message types this package now handles that it once reported as unknown.
+ *
+ *  Their `Unknown Claude SDK message: …` rows are stale evidence from before
+ *  the handling existed: nothing reads them, and a projection that still holds
+ *  them would keep one line of noise per session forever. Dropped on the way
+ *  in, exactly like a progress row. */
+export const CLAUDE_SETTLED_MESSAGE_TYPES: ReadonlySet<string> = new Set(['command_lifecycle', 'tool_progress', 'hook_progress'])
 
 /** Title prefix this package gives a message type it does not handle yet. Shared
  *  by the writer and by the projection prune, so a notice row can be recognized

@@ -1148,6 +1148,10 @@ export class ClaudeSupervisor {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: PLAN_MODE_HANDOFF_PROMPT },
       tools: { type: 'preset', preset: 'claude_code' },
       includePartialMessages: true,
+      // Opt-in: the CLI emits hook lifecycle frames only when asked. Without
+      // them a hook that holds a turn is indistinguishable from a slow model,
+      // and the frames cost nothing when no hook is configured.
+      includeHookEvents: true,
       permissionMode,
       allowDangerouslySkipPermissions: true,
       canUseTool,
@@ -1422,6 +1426,59 @@ export class ClaudeSupervisor {
           phase: 'completed',
           title: message.title,
           detail: message.detail,
+        })
+        return
+      }
+      case 'command-lifecycle': {
+        // The prompt that opened this turn IS this turn: its queue → run → done
+        // progress is already drawn as the turn's own rows. A prompt that
+        // arrived while the turn was running has no other evidence anywhere,
+        // and this frame is what tells its sender the CLI heard it. Nothing
+        // else is narrated here: the CLI books its own internal commands the
+        // same way, and those are not the reader's messages.
+        if (message.commandUuid === active.promptUuid) return
+        if (!active.ownedPromptUuids.has(message.commandUuid)) return
+        const cancelled = message.state === 'cancelled'
+        const settled = message.state === 'completed' || cancelled
+        await this.#appendActivity(active, {
+          kind: 'status',
+          // 'updated' while it is still waiting: a queued send has not run yet,
+          // which is exactly what an open row means. The response settles it.
+          phase: settled ? (cancelled ? 'failed' : 'completed') : 'updated',
+          commandUuid: message.commandUuid,
+          title: cancelled
+            ? 'Claude Code dropped your queued message'
+            : message.state === 'completed'
+              ? 'Claude Code ran your queued message'
+              : message.state === 'started'
+                ? 'Claude Code picked up your queued message'
+                : 'Claude Code queued your message',
+          ...(cancelled
+            ? { summary: 'it was cancelled before Claude read it' }
+            : message.state === 'queued'
+              ? { summary: 'Claude reads it at the next step of this turn' }
+              : {}),
+          ...(cancelled ? { isError: true } : {}),
+        })
+        return
+      }
+      case 'hook': {
+        // One row per invocation, closed by its response: without the fold a
+        // slow hook would look like two hooks.
+        await this.#appendActivity(active, {
+          kind: 'status',
+          phase: message.state === 'started' ? 'updated' : message.state === 'failed' ? 'failed' : 'completed',
+          hookId: message.hookId,
+          ...(message.hookName === undefined ? {} : { hookName: message.hookName }),
+          ...(message.hookEvent === undefined ? {} : { hookEvent: message.hookEvent }),
+          title: `Claude Code hook ${message.hookName ?? message.hookEvent ?? message.hookId}`,
+          summary: message.state === 'started'
+            ? `${message.hookEvent ?? 'hook'} running`
+            : message.state === 'failed'
+              ? `${message.hookEvent ?? 'hook'} exited ${String(message.exitCode ?? 1)}`
+              : `${message.hookEvent ?? 'hook'} finished`,
+          ...(message.state === 'failed' ? { isError: true } : {}),
+          ...(message.output === undefined ? {} : { detail: message.output }),
         })
         return
       }
