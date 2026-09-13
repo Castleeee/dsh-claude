@@ -249,6 +249,42 @@ describe('Claude sidecar repository', () => {
     unsubscribe()
   })
 
+  it('keeps the whole context report across a write and a read', async () => {
+    // The meter reads these back out of the projection, so what the CLI said
+    // about the window, auto-compaction and the message mix has to survive the
+    // document, not just the write that produced it.
+    const store = await repository()
+    await store.writeContextUsage('session', {
+      model: 'claude-opus-5[1M]',
+      totalTokens: 540_000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      percentage: 54,
+      categories: [{ name: 'Messages', tokens: 445_000, color: '#3b82f6' }],
+      isAutoCompactEnabled: true,
+      autoCompactThreshold: 967_000,
+      messageBreakdown: {
+        toolCallTokens: 40_000,
+        toolResultTokens: 380_000,
+        attachmentTokens: 0,
+        assistantMessageTokens: 20_000,
+        userMessageTokens: 5_000,
+        redirectedContextTokens: 0,
+        unattributedTokens: 0,
+      },
+    })
+    const stored = JSON.parse(await readFile(join(store.root, `${Buffer.from('session').toString('base64url')}.json`), 'utf8')) as { contextUsage: unknown }
+    const reread = await store.read('session')
+    for (const value of [stored.contextUsage, reread.contextUsage]) {
+      expect(value).toMatchObject({
+        rawMaxTokens: 1_000_000,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 967_000,
+        messageBreakdown: { toolResultTokens: 380_000 },
+      })
+    }
+  })
+
   it('streams what a running turn is doing without writing any of it', async () => {
     const store = await repository()
     const deltas: ClaudeSidecarDelta[] = []

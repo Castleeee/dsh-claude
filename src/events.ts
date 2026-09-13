@@ -130,18 +130,41 @@ export function normalizeLiveProgress(value: unknown): ClaudeLiveProgress | unde
   }
 }
 
+/** What the messages in a Claude context are made of, in the CLI's own
+ *  accounting. A Claude conversation is mostly tool results, which is the one
+ *  thing a message count alone cannot tell. */
+export interface ClaudeContextMessageBreakdown {
+  toolCallTokens: number
+  toolResultTokens: number
+  attachmentTokens: number
+  assistantMessageTokens: number
+  userMessageTokens: number
+  redirectedContextTokens: number
+  unattributedTokens: number
+}
+
 export interface ClaudeContextUsageEvent {
   model: string
   totalTokens: number
   maxTokens: number
+  /** The window the CLI measures the percentage against, which is not always
+   *  the model's own limit: a compaction policy can pick a smaller one. */
+  rawMaxTokens?: number
   percentage: number
   categories: readonly ClaudeContextUsageCategory[]
+  /** Whether Claude Code compacts the context on its own, and the occupancy at
+   *  which it starts. Read from the CLI: this is the setting that decides
+   *  whether compaction is something the reader will see at all. */
+  isAutoCompactEnabled?: boolean
+  autoCompactThreshold?: number
+  messageBreakdown?: ClaudeContextMessageBreakdown
 }
 
 export interface ClaudeContextUsageInput {
   model: unknown
   totalTokens: unknown
   maxTokens: unknown
+  rawMaxTokens?: unknown
   percentage: unknown
   categories: readonly {
     name?: unknown
@@ -149,6 +172,9 @@ export interface ClaudeContextUsageInput {
     color?: unknown
     isDeferred?: unknown
   }[]
+  isAutoCompactEnabled?: unknown
+  autoCompactThreshold?: unknown
+  messageBreakdown?: unknown
 }
 
 declare module '@deepseek-ai/dsh-session/types' {
@@ -294,11 +320,31 @@ function nonNegativeInteger(value: unknown): number {
     : 0
 }
 
+function contextMessageBreakdown(value: unknown): ClaudeContextMessageBreakdown | undefined {
+  const input = value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+  if (input === undefined) return undefined
+  return {
+    toolCallTokens: nonNegativeInteger(input.toolCallTokens),
+    toolResultTokens: nonNegativeInteger(input.toolResultTokens),
+    attachmentTokens: nonNegativeInteger(input.attachmentTokens),
+    assistantMessageTokens: nonNegativeInteger(input.assistantMessageTokens),
+    userMessageTokens: nonNegativeInteger(input.userMessageTokens),
+    redirectedContextTokens: nonNegativeInteger(input.redirectedContextTokens),
+    unattributedTokens: nonNegativeInteger(input.unattributedTokens),
+  }
+}
+
 export function normalizeContextUsage(input: ClaudeContextUsageInput): ClaudeContextUsageEvent {
+  const rawMaxTokens = nonNegativeInteger(input.rawMaxTokens)
+  const threshold = nonNegativeInteger(input.autoCompactThreshold)
+  const breakdown = contextMessageBreakdown(input.messageBreakdown)
   return {
     model: redactText(typeof input.model === 'string' ? input.model : 'unknown', 128),
     totalTokens: nonNegativeInteger(input.totalTokens),
     maxTokens: nonNegativeInteger(input.maxTokens),
+    ...(rawMaxTokens === 0 ? {} : { rawMaxTokens }),
     percentage: Math.min(100, nonNegativeInteger(input.percentage)),
     categories: input.categories.slice(0, MAX_CONTEXT_CATEGORIES).map(category => ({
       name: redactText(typeof category.name === 'string' ? category.name : 'Unknown', 128),
@@ -308,6 +354,9 @@ export function normalizeContextUsage(input: ClaudeContextUsageInput): ClaudeCon
         : FALLBACK_CONTEXT_COLOR,
       ...(category.isDeferred === true ? { isDeferred: true } : {}),
     })),
+    ...(input.isAutoCompactEnabled === undefined ? {} : { isAutoCompactEnabled: input.isAutoCompactEnabled === true }),
+    ...(threshold === 0 ? {} : { autoCompactThreshold: threshold }),
+    ...(breakdown === undefined ? {} : { messageBreakdown: breakdown }),
   }
 }
 
