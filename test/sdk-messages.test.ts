@@ -23,6 +23,26 @@ describe('Claude SDK message normalization', () => {
     }))).toEqual([{ kind: 'text-delta', text: 'hello' }])
   })
 
+  it('takes one request\'s own usage off the partial stream', () => {
+    // The assistant message for the same request carries placeholder zeros, and
+    // the result reports the turn's sum; this frame is the single request.
+    expect(normalizeSdkMessage(sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 2_129, output_tokens: 67, cache_read_input_tokens: 14_080 } },
+    }))).toEqual([{ kind: 'request-usage', usage: { inputTokens: 2_129, outputTokens: 67, cacheReadTokens: 14_080 } }])
+    // A subagent request keeps its parent, so the supervisor can leave it out of
+    // the main conversation's size.
+    expect(normalizeSdkMessage(sdk({
+      type: 'stream_event',
+      parent_tool_use_id: 'task-1',
+      event: { type: 'message_delta', usage: { input_tokens: 10, output_tokens: 2 } },
+    }))).toEqual([{ kind: 'request-usage', usage: { inputTokens: 10, outputTokens: 2 }, parentToolUseId: 'task-1' }])
+    // A frame carrying nothing countable is not a sample.
+    expect(normalizeSdkMessage(sdk({ type: 'stream_event', event: { type: 'message_delta', usage: {} } }))).toEqual([])
+    expect(normalizeSdkMessage(sdk({ type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 0 } } } }))).toEqual([])
+  })
+
   it('normalizes assistant tool use and completed thinking', () => {
     expect(normalizeSdkMessage(sdk({
       type: 'assistant',

@@ -211,6 +211,28 @@ const delta = (text: string) => ({
   event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
 }) as SDKMessage
 
+/** One request's own usage, as the CLI reports it on the partial stream. */
+const requestUsage = (inputTokens: number, cacheReadTokens: number, outputTokens: number) => ({
+  type: 'stream_event',
+  parent_tool_use_id: null,
+  event: {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use' },
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+  },
+}) as SDKMessage
+
+/** The placeholder usage the CLI forwards on an assistant message: no counts. */
+const placeholderUsage = () => ({
+  type: 'assistant',
+  parent_tool_use_id: null,
+  message: {
+    role: 'assistant',
+    content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } }],
+    usage: { input_tokens: 0, output_tokens: 0 },
+  },
+}) as SDKMessage
+
 /** One live thinking-token estimate, as the CLI streams it while it thinks. */
 const progress = (estimatedTokens: number) => ({
   type: 'system',
@@ -2412,6 +2434,40 @@ describe('Claude supervisor', () => {
     query.push(result('done'))
     await collect(output)
     unsubscribe()
+    await runtime.dispose()
+  })
+
+  it("reports the last request's prompt and the turn's output, not a placeholder zero", async () => {
+    // DSH divides this by the context window, so it has to be one request's
+    // prompt. The result reports the turn's SUM over every request, and the
+    // assistant message carries zeros — the partial frame is the only real
+    // per-request sample there is.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'look around' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(placeholderUsage())
+    query.push(requestUsage(2_129, 14_080, 67))
+    query.push(delta('working'))
+    query.push(placeholderUsage())
+    // The newest request's prompt is the conversation's current size, and the
+    // placeholder that follows it must not erase it.
+    query.push(requestUsage(179, 16_128, 66))
+    query.push({
+      ...result('done') as object,
+      usage: { input_tokens: 2_308, output_tokens: 133, cache_read_input_tokens: 30_208 },
+    } as SDKMessage)
+    const events = await collect(output)
+    const usage = events.find(event => event.type === 'usage')
+    expect(usage).toEqual({
+      type: 'usage',
+      usage: { inputTokens: 179, cacheReadTokens: 16_128, outputTokens: 133 },
+    })
+    // The sidecar keeps the turn total, which is the audit and cost record.
+    const row = (await projection(runtime)).activities.find(activity => activity.kind === 'usage')
+    expect(row?.usage).toMatchObject({ inputTokens: 2_308, cacheReadTokens: 30_208, outputTokens: 133 })
     await runtime.dispose()
   })
 
