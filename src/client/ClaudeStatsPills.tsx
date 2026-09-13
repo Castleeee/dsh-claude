@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { IconDatabaseOutline16, IconGaugeOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
@@ -97,7 +97,11 @@ function usageRows(stats: ClaudeSessionStats): readonly StatsRow[] {
 
 export function ClaudeStatsPills({ useClaudeProjection, t }: ClaudeStatsPillsProps) {
   const owned = useClaudeProjection(value => value.owned)
-  const stats = useClaudeProjection(value => claudeSessionStats(value.activities))
+  const activities = useClaudeProjection(value => value.activities)
+  // Folded from the activity list rather than inside the selector: a selector
+  // that builds a new object every notification would re-render this row on
+  // every frame of a running turn, and the list only changes when it changes.
+  const stats = useMemo(() => claudeSessionStats(activities), [activities])
   const [open, setOpen] = useState<'time' | 'usage' | undefined>(undefined)
   const rootRef = useRef<HTMLDivElement>(null)
   // Every Claude Session marks the document, whether or not it has figures yet:
