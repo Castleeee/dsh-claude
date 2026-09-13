@@ -9,6 +9,7 @@
  *  model provider still get a readable title, since the only model this plugin
  *  needs is the one it already runs. */
 import { query as claudeQuery, type Options as ClaudeOptions, type Query } from '@anthropic-ai/claude-agent-sdk'
+import { isCliFailureReply } from './cli-reply.ts'
 
 /** Cheapest model that can summarize a sentence in the language it was written in. */
 export const SESSION_TITLE_MODEL = 'haiku'
@@ -44,10 +45,13 @@ export function sessionTitlePrompt(request: SessionTitleRequest): string {
 }
 
 /** The one line of the reply that is the title. DSH strips control characters
- *  and truncates to its own byte cap, so nothing else is cleaned here. */
+ *  and truncates to its own byte cap, so nothing else is cleaned here — except
+ *  that a CLI failure answer is not a title at all: it is rejected, which sends
+ *  the caller back to DSH's deterministic first-words fallback. */
 export function sessionTitleLine(reply: string): string {
   const line = reply.split('\n').map(candidate => candidate.trim()).find(candidate => candidate.length > 0)
-  return line === undefined ? '' : line.slice(0, MAX_TITLE_CHARS)
+  if (line === undefined || isCliFailureReply(line)) return ''
+  return line.slice(0, MAX_TITLE_CHARS)
 }
 
 /**
@@ -77,10 +81,15 @@ export async function summarizeSessionTitle(
         abortController: lifetime,
         model: SESSION_TITLE_MODEL,
         allowedTools: [],
-        // Isolated from filesystem settings on purpose: a CLAUDE.md instruction
-        // aimed at the coding session ("always answer in English", "start every
-        // reply with a checklist") would be answering the wrong question here.
-        settingSources: [],
+        // User settings, and only those. The credential the CLI authenticates
+        // with lives in `~/.claude/settings.json`'s `env` block, so a title turn
+        // that loads no settings cannot run at all — it answers "Not logged in ·
+        // Please run /login", which is how a session came to be named after an
+        // auth error. Project and local settings stay out on purpose: a CLAUDE.md
+        // instruction aimed at the coding session ("always answer in English",
+        // "start every reply with a checklist") would be answering the wrong
+        // question here.
+        settingSources: ['user'],
         maxTurns: 1,
         ...(executablePath.length === 0 ? {} : { pathToClaudeCodeExecutable: executablePath }),
       },

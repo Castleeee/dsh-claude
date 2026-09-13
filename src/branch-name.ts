@@ -5,6 +5,7 @@
  *  a throwaway Haiku turn compresses it into a slug. Naming is a nicety: every
  *  failure here returns `undefined` and the caller keeps its timestamped name. */
 import { query as claudeQuery, type Options as ClaudeOptions, type Query } from '@anthropic-ai/claude-agent-sdk'
+import { isCliFailureReply } from './cli-reply.ts'
 
 /** Cheapest model that can translate and compress a sentence. */
 export const BRANCH_SUMMARY_MODEL = 'haiku'
@@ -37,6 +38,9 @@ export function branchSummaryPrompt(intent: string): string {
 export function branchSlug(reply: string): string | undefined {
   const line = reply.trim()
   if (line.length === 0 || line.length > MAX_REPLY_CHARS || /[\r\n]/u.test(line)) return undefined
+  // An auth failure is short and hyphenates into exactly six words, so it would
+  // otherwise pass every guard below and name the branch after it.
+  if (isCliFailureReply(line)) return undefined
   const words = line.toLocaleLowerCase('en-US')
     .replace(/[^a-z0-9]+/gu, '-')
     .split('-')
@@ -83,7 +87,10 @@ export async function summarizeBranchSlug(
         abortController: lifetime,
         model: BRANCH_SUMMARY_MODEL,
         allowedTools: [],
-        settingSources: [],
+        // User settings only: the CLI's credential lives there, while a project
+        // CLAUDE.md ("reply in the user's language") would turn the answer into
+        // an unusable slug.
+        settingSources: ['user'],
         maxTurns: 1,
         ...(executablePath.length === 0 ? {} : { pathToClaudeCodeExecutable: executablePath }),
       },

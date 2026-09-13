@@ -32,6 +32,12 @@ describe('branchSlug', () => {
     expect(branchSlug('I cannot help with that request, but here is a suggestion for your branch name instead')).toBeUndefined()
     expect(branchSlug('修复登录跳转')).toBeUndefined()
   })
+
+  it('refuses the CLI failure answer, which would otherwise pass every guard', () => {
+    // Short, single-line, six words: "not-logged-in-please-run-login" satisfied
+    // every rule above and could have named a worktree branch.
+    expect(branchSlug('Not logged in · Please run /login')).toBeUndefined()
+  })
 })
 
 describe('uniqueBranchName', () => {
@@ -51,11 +57,12 @@ describe('summarizeBranchSlug', () => {
     }
     await expect(summarizeBranchSlug('/opt/claude', '给 worktree 分支名换成需求摘要', factory)).resolves.toBe('worktree-branch-naming')
     expect(params?.prompt).toContain('给 worktree 分支名换成需求摘要')
-    // A project CLAUDE.md ("reply in the user's language") would ruin the slug.
+    // A project CLAUDE.md ("reply in the user's language") would ruin the slug,
+    // so only user settings load — and they must, for the CLI's credential.
     expect(params?.options).toMatchObject({
       model: 'haiku',
       allowedTools: [],
-      settingSources: [],
+      settingSources: ['user'],
       maxTurns: 1,
       pathToClaudeCodeExecutable: '/opt/claude',
     })
