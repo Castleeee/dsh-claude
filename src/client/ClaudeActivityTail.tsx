@@ -125,7 +125,9 @@ export function ClaudeTaskLauncher({ turn, tasks, t, openTasks }: ClaudeTaskLaun
 export function ClaudeLivePill({ live, t }: { live: ClaudeLiveProgress; t: ClaudeActivityTailInjected['t'] }) {
   const label = live.state === 'tool'
     ? t('liveTool', { tool: live.label ?? t('liveToolUnknown') })
-    : live.state === 'waiting' ? t('liveWaiting') : t('liveThinking')
+    : live.state === 'waiting'
+      ? t('liveWaiting')
+      : live.state === 'compacting' ? t('liveCompacting') : t('liveThinking')
   return (
     <div style={styles.tasksBadgeWrap} data-claude-live={live.state}>
       <span style={styles.livePill}>

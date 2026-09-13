@@ -1603,6 +1603,11 @@ export class ClaudeSupervisor {
       }
       case 'status':
       case 'warning':
+        // A status frame that names the state the turn is in feeds the live
+        // indicator: compaction blocks a turn for as long as it takes and
+        // prints nothing while it runs, so the reader would otherwise see a
+        // pill that stopped moving.
+        if (message.kind === 'status' && message.live !== undefined) this.#setLive(active, { state: message.live })
         // One-shot notices (an API retry, a hook echo) have no later event to
         // close them, so they must land settled: an 'updated' phase reads as
         // still running in the transcript forever.

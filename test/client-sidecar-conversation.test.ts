@@ -746,6 +746,8 @@ describe('Claude sidecar conversation projection', () => {
     expect(thinking).toContain('liveThinking')
     expect(thinking).toContain('dsh-claude-act-running')
     expect(render({ turn: 2, state: 'waiting' })).toContain('liveWaiting')
+    // Compaction is the one blocking step Claude prints nothing for.
+    expect(render({ turn: 2, state: 'compacting' })).toContain('liveCompacting')
     const tool = render({ turn: 2, state: 'tool', label: 'Bash', elapsedMs: 4_200 })
     expect(tool).toContain('liveTool:{&quot;tool&quot;:&quot;Bash&quot;}')
     expect(tool).toContain('4.2s')

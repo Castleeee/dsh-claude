@@ -1,5 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { ClaudeUsage } from './events.ts'
+import type { ClaudeLiveProgress, ClaudeUsage } from './events.ts'
 import { CLAUDE_PROGRESS_SUBTYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, claudeStatusTitle } from './constants.ts'
 
 export type NormalizedSdkMessage =
@@ -49,7 +49,17 @@ export type NormalizedSdkMessage =
     usage: ClaudeUsage
     parentToolUseId?: string
   }
-  | { kind: 'status'; title: string; summary?: string; detail?: unknown }
+  | {
+    kind: 'status'
+    title: string
+    summary?: string
+    detail?: unknown
+    /** A status frame that also says what the turn is doing right now: the CLI
+     *  reports `compacting` before it rewrites the context and `requesting` for
+     *  each model call, and both are states a reader watches rather than rows
+     *  they read. */
+    live?: ClaudeLiveProgress['state']
+  }
   | { kind: 'warning'; title: string; summary?: string; detail?: unknown }
   | {
     /** The CLI's own bookkeeping for a prompt it accepted, keyed by the uuid
@@ -231,6 +241,19 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
   }
   if (subtype === 'status') {
     const status = message.status
+    // A compaction that failed is the one thing this frame must not swallow: it
+    // blocks a turn's progress, and nothing later reports it.
+    if (message.compact_result === 'failed') {
+      const reason = string(message.compact_error)
+      return [{
+        kind: 'warning',
+        title: 'Claude Code could not compact the conversation',
+        ...(reason === undefined ? {} : { summary: reason }),
+        detail: message,
+      }]
+    }
+    if (status === 'compacting') return [{ kind: 'status', title: 'Claude Code compacting', live: 'compacting', detail: message }]
+    if (status === 'requesting') return [{ kind: 'status', title: 'Claude Code requesting', live: 'thinking', detail: message }]
     if (status === null) return [{ kind: 'status', title: 'Claude Code is ready' }]
     return [{ kind: 'status', title: `Claude Code ${String(status)}`, detail: message }]
   }

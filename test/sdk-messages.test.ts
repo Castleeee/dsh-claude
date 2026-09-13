@@ -348,6 +348,32 @@ describe('Claude SDK message normalization', () => {
       .toMatchObject([{ kind: 'warning', title: 'Claude Code hook format' }])
   })
 
+  it('names what a status frame says the turn is doing, and reports a compaction that failed', () => {
+    // Compaction blocks a turn for as long as it takes and prints nothing while
+    // it runs, so the frame that announces it is the only thing to show.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: 'compacting' })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code compacting', live: 'compacting' }])
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: 'requesting' })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code requesting', live: 'thinking' }])
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: null })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code is ready' }])
+    // A failed compaction is the one thing this frame must not swallow.
+    expect(normalizeSdkMessage(sdk({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'Not enough messages to compact.',
+    }))).toMatchObject([{
+      kind: 'warning',
+      title: 'Claude Code could not compact the conversation',
+      summary: 'Not enough messages to compact.',
+    }])
+    // A successful one is drawn by the boundary that follows it.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: null, compact_result: 'success' })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code is ready' }])
+  })
+
   it('reads a prompt the CLI accepted and answers for it by uuid', () => {
     expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'queued' })))
       .toEqual([{ kind: 'command-lifecycle', commandUuid: 'p1', state: 'queued' }])

@@ -103,15 +103,17 @@ export interface ClaudeLiveProgress {
    *  its own turn. */
   readonly turn: number
   /** `thinking` while the model works, `tool` while one of its tools runs,
-   *  `waiting` between them (a tool result being folded back in). */
-  readonly state: 'thinking' | 'tool' | 'waiting'
+   *  `waiting` between them (a tool result being folded back in), and
+   *  `compacting` while Claude Code rewrites the context — the one step that
+   *  blocks the turn without printing anything. */
+  readonly state: 'thinking' | 'tool' | 'waiting' | 'compacting'
   /** The tool that is running, for `tool`. */
   readonly label?: string
   /** How long the CLI says the current tool has been running. */
   readonly elapsedMs?: number
 }
 
-const LIVE_STATES: ReadonlySet<string> = new Set(['thinking', 'tool', 'waiting'])
+const LIVE_STATES: ReadonlySet<string> = new Set(['thinking', 'tool', 'waiting', 'compacting'])
 
 /** Read a live state off the wire, or nothing when it does not describe one. */
 export function normalizeLiveProgress(value: unknown): ClaudeLiveProgress | undefined {

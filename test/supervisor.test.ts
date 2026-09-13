@@ -2085,6 +2085,45 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('shows a compaction while it runs, and reports one that failed', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const live: unknown[] = []
+    const unsubscribe = sidecars.get(runtime)!.subscribe(owner.agent.id as string, delta => {
+      if (delta.kind === 'live') live.push(delta.value)
+    })
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'keep going' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({ type: 'system', subtype: 'status', status: 'compacting' } as SDKMessage)
+    query.push({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 72_734, post_tokens: 1_925, duration_ms: 8_958 },
+    } as SDKMessage)
+    query.push({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'Not enough messages to compact.',
+    } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    expect(live).toEqual([{ turn: 1, state: 'compacting' }, undefined])
+    const stored = await projection(runtime)
+    // The divider the transcript draws, and the failure it must not swallow.
+    expect(stored.activities.find(activity => activity.kind === 'compaction')?.detail).toContain('72734')
+    expect(stored.activities.find(activity => activity.title === 'Claude Code could not compact the conversation')).toMatchObject({
+      kind: 'warning',
+      phase: 'completed',
+      summary: 'Not enough messages to compact.',
+    })
+    unsubscribe()
+    await runtime.dispose()
+  })
+
   it('records a queued message the CLI dropped as a failure', async () => {
     const transport = factory()
     const owner = fakeAgent()
