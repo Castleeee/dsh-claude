@@ -135,6 +135,7 @@ function supervisor(
   idleTimeoutMs = 60_000,
   suppliedSidecar?: ClaudeSidecarRepository,
   renderMode: ClaudeRenderMode = 'plugin',
+  attachments?: import('../src/adapter.ts').ClaudeAttachmentReader,
 ) {
   const root = join(tmpdir(), `dsh-claude-supervisor-${randomUUID()}`)
   sidecarRoots.push(root)
@@ -153,6 +154,7 @@ function supervisor(
     config,
     queryFactory: create,
     sidecar,
+    ...(attachments === undefined ? {} : { attachments }),
   })
   sidecars.set(runtime, sidecar)
   configs.set(runtime, config)
@@ -1845,7 +1847,7 @@ describe('Claude supervisor', () => {
     query.push(init())
     const input = query.input[Symbol.asyncIterator]()
     const opened = await input.next()
-    expect(runtime.deliverSteering('dsh-session-1', 'change of plan')).toBe('delivered')
+    await expect(runtime.deliverSteering('dsh-session-1', 'change of plan')).resolves.toBe('delivered')
     const steered = await input.next()
     expect(steered.value?.message.content).toBe('change of plan')
     expect(steered.value?.uuid).not.toBe(opened.value?.uuid)
@@ -1866,22 +1868,86 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('steers files and images through the same resolution an ordinary send uses', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const attachments = {
+      imageLimits: {
+        mediaTypes: ['image/png'] as const,
+        maxImageBytes: 5_000_000,
+        maxImagePixels: 4_000_000,
+        maxImagesPerMessage: 4,
+        maxMessageImageBytes: 8_000_000,
+      },
+      fileHostPath: (ref: { name: string }) => `/host/${ref.name}`,
+      readImage: async () => ({
+        ref: { id: 'img-1', name: 'shot.png', mediaType: 'image/png' as const, bytes: 3, width: 2, height: 2 },
+        data: new Uint8Array([1, 2, 3]),
+      }),
+    }
+    const runtime = supervisor(transport.create, 4, 60_000, undefined, 'plugin', attachments as never)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const input = query.input[Symbol.asyncIterator]()
+    await input.next()
+    await expect(runtime.deliverSteering('dsh-session-1', [
+      { type: 'text', text: 'here is the crash' },
+      { type: 'file', attachment: { id: 'f1', name: 'log.txt', mediaType: 'text/plain', bytes: 10 } },
+      { type: 'image', attachment: { id: 'img-1', name: 'shot.png', mediaType: 'image/png', bytes: 3, width: 2, height: 2 } },
+    ] as never)).resolves.toBe('delivered')
+    const steered = await input.next()
+    const content = steered.value?.message.content
+    expect(Array.isArray(content)).toBe(true)
+    // The file travels as the path Claude can read, ahead of the user's words,
+    // and the image as the base64 block the API takes.
+    expect(content).toEqual([
+      { type: 'text', text: 'The user attached these files to this message:\n- log.txt — read it from /host/log.txt' },
+      { type: 'text', text: 'here is the crash' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+    ])
+    query.push(result('done'))
+    await collect(output)
+    await runtime.dispose()
+  })
+
+  it('keeps a steered message with attachments when nothing can resolve them', async () => {
+    // Without an attachment reader the message is refused, which is the caller's
+    // signal to keep it: the next turn resolves it with the full turn path, so
+    // nothing about the message is lost either way.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const input = query.input[Symbol.asyncIterator]()
+    await input.next()
+    await expect(runtime.deliverSteering('dsh-session-1', [
+      { type: 'image', attachment: { id: 'img-1', name: 'shot.png', mediaType: 'image/png', bytes: 3, width: 2, height: 2 } },
+    ] as never)).resolves.toBe('unavailable')
+    // A refused steer owns no prompt uuid, so the turn's own result still ends it.
+    query.push(result('done'))
+    await collect(output)
+    await runtime.dispose()
+  })
+
   it('reports steering unavailable when there is no running turn to steer', async () => {
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
-    expect(runtime.deliverSteering('dsh-session-1', 'anyone there')).toBe('unavailable')
+    await expect(runtime.deliverSteering('dsh-session-1', 'anyone there')).resolves.toBe('unavailable')
     const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
     const query = transport.queries[0]!
     query.push(init())
     for (let index = 0; index < 15; index += 1) {
-      expect(runtime.deliverSteering('dsh-session-1', `steer ${index}`)).toBe('delivered')
+      await expect(runtime.deliverSteering('dsh-session-1', `steer ${index}`)).resolves.toBe('delivered')
     }
     // The ownership set is bounded: past the cap the caller keeps its message.
-    expect(runtime.deliverSteering('dsh-session-1', 'one too many')).toBe('unavailable')
+    await expect(runtime.deliverSteering('dsh-session-1', 'one too many')).resolves.toBe('unavailable')
     query.push(result('done'))
     await collect(output)
-    expect(runtime.deliverSteering('dsh-session-1', 'turn is over')).toBe('unavailable')
+    await expect(runtime.deliverSteering('dsh-session-1', 'turn is over')).resolves.toBe('unavailable')
     await runtime.dispose()
   })
 
@@ -1925,7 +1991,7 @@ describe('Claude supervisor', () => {
     // are still buffered in order.
     const reader = query.input[Symbol.asyncIterator]()
     const opening = (await reader.next()).value!
-    expect(runtime.deliverSteering('dsh-session-1', 'actually, stop after this')).toBe('delivered')
+    await expect(runtime.deliverSteering('dsh-session-1', 'actually, stop after this')).resolves.toBe('delivered')
     const steered = (await reader.next()).value!
     query.push({ type: 'command_lifecycle', command_uuid: opening.uuid, state: 'queued' } as SDKMessage)
     query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'queued' } as SDKMessage)
@@ -1955,7 +2021,7 @@ describe('Claude supervisor', () => {
     query.push(init())
     const reader = query.input[Symbol.asyncIterator]()
     await reader.next()
-    runtime.deliverSteering('dsh-session-1', 'never mind')
+    await runtime.deliverSteering('dsh-session-1', 'never mind')
     const steered = (await reader.next()).value!
     query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'queued' } as SDKMessage)
     query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'cancelled' } as SDKMessage)

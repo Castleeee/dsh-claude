@@ -47,7 +47,10 @@ const NO_RETRY_POLICY: ResolvedRetryPolicy = Object.freeze({
 
 type ClaudePrompt = SDKUserMessage['message']['content']
 type ClaudePromptBlock = Exclude<ClaudePrompt, string>[number]
-type AttachmentReader = Pick<AttachmentStore, 'imageLimits' | 'readImage' | 'fileHostPath'>
+/** What prompt building needs from the attachment store. Shared with the
+ *  supervisor, which resolves a steered message through the same code path. */
+export type ClaudeAttachmentReader = Pick<AttachmentStore, 'imageLimits' | 'readImage' | 'fileHostPath'>
+type AttachmentReader = ClaudeAttachmentReader
 
 /** One line per attached file, ahead of the text it came with.
  *

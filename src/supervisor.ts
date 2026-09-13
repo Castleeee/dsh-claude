@@ -17,7 +17,11 @@ import { ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { AsyncQueue } from './async-queue.ts'
+// The prompt resolver lives with the adapter that owns prompt building. There
+// is no cycle: the adapter imports this module's types only.
+import { resolveDirectUserPrompt, type ClaudeAttachmentReader } from './adapter.ts'
 import { DEFAULT_CLAUDE_RENDER_MODE, TASK_TOOL_NAMES, type ClaudeRenderMode } from './constants.ts'
 import {
   currentClaudeActivityCursor,
@@ -56,17 +60,32 @@ export const LIVE_ELAPSED_INTERVAL_MS = 1_000
 export type ClaudeSteeringOutcome = 'delivered' | 'unavailable'
 /** What {@link ClaudeSupervisor.stopTask} did with one stop request. */
 export type ClaudeStopTaskOutcome = 'stopped' | 'unavailable'
+
+/** One block of a steered message, in the shape DSH hands the caller.
+ *
+ *  Deliberately the same shapes a turn's own prompt carries: a steered message
+ *  is resolved by the same code, so its image limits, its verification and the
+ *  wording that hands a file to Claude cannot drift from an ordinary send. */
+export type ClaudeSteerBlock =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'file'; readonly attachment: FileAttachmentRef }
+  | { readonly type: 'image'; readonly attachment: ImageAttachmentRef }
+
+/** A steered message: plain text, or the content blocks a message arrived as. */
+export type ClaudeSteerContent = string | readonly ClaudeSteerBlock[]
+
 /** The steering entry point this package publishes on the Cordis service named
  *  by `CLAUDE_STEERING_SERVICE`. */
 export interface ClaudeSteeringService {
   /**
    * Hand one user message to the turn `sessionId` is running.
    * @param sessionId - DSH session id whose Claude preset is running.
-   * @param prompt - the message text, already the user's own.
+   * @param content - the message text, or its content blocks when it carried
+   *   attachments.
    * @returns `delivered` once the running turn owns it, `unavailable` when there
    *   is no running turn to steer — keep the message for a later turn.
    */
-  deliver(sessionId: string, prompt: string): ClaudeSteeringOutcome
+  deliver(sessionId: string, content: ClaudeSteerContent): Promise<ClaudeSteeringOutcome>
 }
 
 export type ClaudeSupervisorState =
@@ -423,6 +442,7 @@ export class ClaudeSupervisor {
   readonly #queryFactory: ClaudeQueryFactory
   readonly #runDetached: <T>(operation: () => T) => T
   readonly #sidecar: ClaudeSidecarRepository
+  readonly #attachments: ClaudeAttachmentReader | undefined
   readonly #dynamicPresenterNames = new WeakMap<Agent, Set<string>>()
   readonly #contextWindows = new Map<string, number>()
   #disposed = false
@@ -445,6 +465,10 @@ export class ClaudeSupervisor {
     queryFactory?: ClaudeQueryFactory
     runDetached?: <T>(operation: () => T) => T
     sidecar?: ClaudeSidecarRepository
+    /** Attachment reader for a steered message that carried files or images.
+     *  Absent means only text can be steered; a message with attachments is
+     *  refused, and the caller keeps it for a later turn. */
+    attachments?: ClaudeAttachmentReader
   }) {
     this.#runtime = dependencies.runtime
     this.#approval = dependencies.approval
@@ -453,6 +477,7 @@ export class ClaudeSupervisor {
     this.#queryFactory = dependencies.queryFactory ?? (params => claudeQuery(params))
     this.#runDetached = dependencies.runDetached ?? (operation => operation())
     this.#sidecar = dependencies.sidecar ?? new ClaudeSidecarRepository()
+    this.#attachments = dependencies.attachments
   }
 
   snapshots(): ClaudeSupervisorSnapshot[] {
@@ -537,14 +562,33 @@ export class ClaudeSupervisor {
    *  CLI still reports a queued send.
    *
    *  `unavailable` means there is no live turn to steer — the caller must keep
-   *  its message for a later turn rather than drop it. */
-  deliverSteering(sessionId: string, prompt: string): ClaudeSteeringOutcome {
+   *  its message for a later turn rather than drop it. That is also the answer
+   *  for a message whose attachments cannot be resolved here: the ordinary turn
+   *  path reads them properly, so keeping the message loses nothing. */
+  async deliverSteering(sessionId: string, content: ClaudeSteerContent): Promise<ClaudeSteeringOutcome> {
     const entry = this.#entries.get(sessionId)
     const active = entry?.active
     if (entry === undefined || active === undefined || entry.state !== 'running' || active.aborted) {
       return 'unavailable'
     }
     if (active.ownedPromptUuids.size >= MAX_STEERED_PROMPTS_PER_TURN) return 'unavailable'
+    let prompt: SDKUserMessage['message']['content']
+    if (typeof content === 'string') {
+      prompt = content
+    } else {
+      // Late, so the checks above answer for a message that could never be
+      // steered before anything is read from disk.
+      const attachments = this.#attachments
+      if (attachments === undefined) return 'unavailable'
+      try {
+        prompt = await resolveDirectUserPrompt([{ role: 'user', source: { kind: 'user' }, content } as never], attachments)
+      } catch {
+        return 'unavailable'
+      }
+    }
+    // The turn may have settled while the attachments were being read; pushing
+    // now would reach a turn nobody is steering.
+    if (entry.active !== active || active.aborted) return 'unavailable'
     const uuid = randomUUID()
     active.ownedPromptUuids.add(uuid)
     entry.input.push(sdkUserMessage(prompt, uuid))
