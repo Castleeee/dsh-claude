@@ -43,6 +43,25 @@ export const CLAUDE_INITIALIZATION_TIMEOUT_MS = 30_000
 export const CLAUDE_INTERRUPT_TIMEOUT_MS = 5_000
 /** Control requests must settle; a wedged one must not clog the metadata chain. */
 export const CLAUDE_METADATA_TIMEOUT_MS = 15_000
+/** Bound on steered messages one turn may own, so a misbehaving caller cannot
+ *  grow the ownership set without limit. */
+export const MAX_STEERED_PROMPTS_PER_TURN = 16
+
+/** What {@link ClaudeSupervisor.deliverSteering} did with one steered message. */
+export type ClaudeSteeringOutcome = 'delivered' | 'unavailable'
+
+/** The steering entry point this package publishes on the Cordis service named
+ *  by `CLAUDE_STEERING_SERVICE`. */
+export interface ClaudeSteeringService {
+  /**
+   * Hand one user message to the turn `sessionId` is running.
+   * @param sessionId - DSH session id whose Claude preset is running.
+   * @param prompt - the message text, already the user's own.
+   * @returns `delivered` once the running turn owns it, `unavailable` when there
+   *   is no running turn to steer — keep the message for a later turn.
+   */
+  deliver(sessionId: string, prompt: string): ClaudeSteeringOutcome
+}
 
 export type ClaudeSupervisorState =
   | 'starting'
@@ -177,6 +196,10 @@ interface ActiveTurn {
   native: boolean
   output: AsyncQueue<ClaudeTurnStreamEvent>
   promptUuid: ReturnType<typeof randomUUID>
+  /** Every prompt this turn owns: the one that opened it, plus any steered
+   *  message delivered into it while it ran. A result naming one of these is
+   *  this turn's own; anything else is stale or a protocol violation. */
+  ownedPromptUuids: Set<string>
   phase: 'primary' | 'waiting-tasks' | 'follow-up'
   sawActivity: boolean
   sawTextDelta: boolean
@@ -469,6 +492,29 @@ export class ClaudeSupervisor {
     return this.#runMetadata(agent, model, query => readPlanUsageFrom(query))
   }
 
+  /** Deliver one more user message into the turn a session is already running.
+   *
+   *  Claude Code reads a message pushed into its input stream at the next model
+   *  step of the running turn, so this is the steering entry point: whoever
+   *  takes a steered message out of the agent inbox hands it here. The turn then
+   *  owns one more prompt uuid, and its result no longer ends the turn while the
+   *  CLI still reports a queued send.
+   *
+   *  `unavailable` means there is no live turn to steer — the caller must keep
+   *  its message for a later turn rather than drop it. */
+  deliverSteering(sessionId: string, prompt: string): ClaudeSteeringOutcome {
+    const entry = this.#entries.get(sessionId)
+    const active = entry?.active
+    if (entry === undefined || active === undefined || entry.state !== 'running' || active.aborted) {
+      return 'unavailable'
+    }
+    if (active.ownedPromptUuids.size >= MAX_STEERED_PROMPTS_PER_TURN) return 'unavailable'
+    const uuid = randomUUID()
+    active.ownedPromptUuids.add(uuid)
+    entry.input.push(sdkUserMessage(prompt, uuid))
+    return 'delivered'
+  }
+
   runTurn(request: ClaudeTurnRequest): Promise<AsyncIterable<ClaudeTurnStreamEvent>> {
     const interruption = this.#interruptions.get(request.agent.id as string)
     if (interruption !== undefined) return interruption.then(() => this.runTurn(request))
@@ -700,6 +746,7 @@ export class ClaudeSupervisor {
       native: (request.renderMode ?? this.#config.renderMode ?? DEFAULT_CLAUDE_RENDER_MODE) === 'native',
       output: new AsyncQueue<ClaudeTurnStreamEvent>(),
       promptUuid,
+      ownedPromptUuids: new Set([promptUuid]),
       phase: 'primary',
       sawActivity: false,
       sawTextDelta: false,
@@ -1171,7 +1218,7 @@ export class ClaudeSupervisor {
         await this.#completeProgressSegment(active, message)
         return
       }
-      if (message.userMessageUuid !== undefined && message.userMessageUuid !== active.promptUuid) {
+      if (message.userMessageUuid !== undefined && !active.ownedPromptUuids.has(message.userMessageUuid)) {
         // The cancelled turn's own result, settling after this process picked up
         // the next one: it named the prompt an interrupt already failed, so it
         // must not be read as a protocol violation against the live request.
@@ -1180,6 +1227,13 @@ export class ClaudeSupervisor {
         // report request. Primary-turn mismatches remain protocol failures.
         if (active.phase === 'follow-up') return
         throw new ClaudeProtocolError(`Claude Code result for user message ${message.userMessageUuid} does not match active request ${active.promptUuid}`)
+      }
+      // A steered send the CLI had not reached when it produced this result still
+      // runs. Publish what this result said and keep the turn open: the queued
+      // send's own result ends it.
+      if ((message.queuedTurnCount ?? 0) > 0) {
+        await this.#completeProgressSegment(active, message)
+        return
       }
       await this.#completeTurn(entry, active, message)
       return

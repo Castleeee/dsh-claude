@@ -27,6 +27,12 @@ export const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(['thinking_
 export function claudeStatusTitle(subtype: string): string {
   return `Claude Code ${subtype.replaceAll('_', ' ')}`
 }
+
+/** Cordis service this package publishes so a steering plugin can hand one more
+ *  user message to the turn a Claude session is running. That turn is the only
+ *  thing that can read it into Claude at the next model step, and it lives in
+ *  this package, so the message has to come through here. */
+export const CLAUDE_STEERING_SERVICE = 'claudeSteering'
 export const CLAUDE_DOCTOR_PATH = '/plugins/dsh-claude/doctor'
 export const CLAUDE_CLIENT_DIAGNOSTICS_PATH = '/plugins/dsh-claude/client-diagnostics'
 export const CLAUDE_UPDATE_CHECK_PATH = '/plugins/dsh-claude/update/check'
