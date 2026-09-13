@@ -349,6 +349,21 @@ function toolDescription(toolName: string, input: Record<string, unknown> | unde
       completed = 'Proposed a plan'
       failedAction = 'propose a plan'
       break
+    // The list itself is drawn as a checklist in the card body; the row says
+    // how far through it Claude is, which is the only part a collapsed row can
+    // carry. Counted the way the checklist draws it — an entry with no content
+    // is not a task — so the two can never disagree.
+    case 'TodoWrite': {
+      const rows = Array.isArray(input?.todos) ? input.todos : []
+      const drawn = rows.filter((item): item is Record<string, unknown> => (
+        item !== null && typeof item === 'object' && !Array.isArray(item) && inputString(item as Record<string, unknown>, 'content') !== undefined
+      ))
+      completed = drawn.length === 0
+        ? 'Updated todos'
+        : `Updated todos (${drawn.filter(item => item.status === 'completed').length}/${drawn.length} done)`
+      failedAction = 'update todos'
+      break
+    }
     default:
       completed = description ?? `${toolName}${target === undefined ? '' : ` ${target}`}`
       failedAction = completed.charAt(0).toLowerCase() + completed.slice(1)

@@ -45,6 +45,13 @@ const ACTIVITY_CSS = [
   '.dsh-claude-tool-field-value{min-width:0;color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere}',
   '.dsh-claude-tool-paths{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;font:var(--dsw-font-markdown-code-block-small)}',
   '.dsh-claude-tool-path{overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}',
+  '.dsh-claude-todo-list{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none}',
+  '.dsh-claude-todo-item{display:flex;align-items:flex-start;gap:6px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary)}',
+  '.dsh-claude-todo-glyph{flex:none;width:14px;text-align:center;color:var(--dsw-alias-label-tertiary)}',
+  '.dsh-claude-todo-item[data-status="in_progress"] .dsh-claude-todo-glyph{color:var(--dsw-alias-state-warning-primary,#e0a13c)}',
+  '.dsh-claude-todo-item[data-status="completed"] .dsh-claude-todo-glyph{color:var(--dsw-alias-state-success-primary,#21c55d)}',
+  '.dsh-claude-todo-item[data-status="completed"] .dsh-claude-todo-content{color:var(--dsw-alias-label-tertiary);text-decoration:line-through}',
+  '.dsh-claude-todo-content{min-width:0;overflow-wrap:anywhere}',
   '.dsh-claude-tool-code{max-height:260px;overflow:auto;margin:0;padding:8px 0;border-radius:8px;background:var(--dsw-alias-markdown-code-block);font:var(--dsw-font-markdown-code-block-small)}',
   '.dsh-claude-tool-code-line{display:grid;grid-template-columns:44px minmax(max-content,1fr);min-height:18px}',
   '.dsh-claude-tool-line-number{padding-right:10px;text-align:right;user-select:none;color:var(--dsw-alias-label-caption);border-right:1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 12%, transparent))}',
@@ -248,6 +255,48 @@ function TextDetail({ title, value }: { title: string; value: string | undefined
   return <Section title={title}><pre className="dsh-claude-tool-detail">{value}</pre></Section>
 }
 
+/** One entry of a TodoWrite list, as the CLI writes it. */
+export interface ClaudeTodoItem {
+  readonly content: string
+  readonly status: 'pending' | 'in_progress' | 'completed'
+  readonly activeForm?: string
+}
+
+/** The todo list a TodoWrite call carries, or an empty list for anything else.
+ *
+ *  The tool's whole payload is the list — the same fields in every call — and
+ *  the generic card would print it as one line of JSON. Claude Code draws it as
+ *  a checklist, which is the only form in which "what is left" is legible. */
+export function todoItems(value: unknown): readonly ClaudeTodoItem[] {
+  const list = Array.isArray(value) ? value : record(value)?.todos
+  if (!Array.isArray(list)) return []
+  return list.flatMap(item => {
+    const entry = record(item)
+    const content = text(entry?.content)
+    if (content === undefined) return []
+    const status: ClaudeTodoItem['status'] = entry?.status === 'completed' || entry?.status === 'in_progress' ? entry.status : 'pending'
+    const activeForm = text(entry?.activeForm)
+    return [{ content, status, ...(activeForm === undefined ? {} : { activeForm }) }]
+  }).slice(0, MAX_TODO_ITEMS)
+}
+
+const MAX_TODO_ITEMS = 200
+
+function TodoChecklist({ todos }: { todos: readonly ClaudeTodoItem[] }) {
+  return (
+    <ul className="dsh-claude-todo-list">
+      {todos.map((todo, index) => (
+        <li className="dsh-claude-todo-item" data-status={todo.status} key={`${index}:${todo.content}`}>
+          <span className="dsh-claude-todo-glyph" aria-hidden="true">
+            {todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◐' : '☐'}
+          </span>
+          <span className="dsh-claude-todo-content">{todo.content}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function filenameList(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return []
   return value.filter((item): item is string => typeof item === 'string')
@@ -283,6 +332,11 @@ function ToolPresentation({ tool, t }: { tool: ClaudeTranscriptTool; t: Translat
 
   if (tool.diffs !== undefined) {
     return <><DiffBlock diffs={[...tool.diffs]} labels={diffBlockLabels(t)} /><TextDetail title={outputTitle} value={typeof outputValue === 'string' ? outputValue : undefined} /></>
+  }
+
+  if (tool.toolName === 'TodoWrite') {
+    const todos = todoItems(inputValue)
+    if (todos.length > 0) return <Section title={t('todoList')}><TodoChecklist todos={todos} /></Section>
   }
 
   if (tool.toolName === 'Read') {

@@ -32,6 +32,7 @@ import {
   ClaudeCompactionDivider,
   ClaudeTranscriptToolGroup,
   ClaudeTranscriptToolItem,
+  todoItems,
 } from '../src/client/ClaudeActivityNode.tsx'
 
 const taskCall: ClaudeActivityEvent = {
@@ -909,8 +910,7 @@ describe('Claude sidecar conversation projection', () => {
     expect(markup).toContain('.dshClaudePanelIconButton:hover')
   })
 
-  it('offers a stop control on a running task, and none on a finished one', () => {
-    const panel = (tasks: readonly ClaudeTaskInfo[], stopTask?: (sessionId: string, taskId: string) => Promise<void>) =>
+  it('offers a stop control on a running task, and none on a finished one', () => {    const panel = (tasks: readonly ClaudeTaskInfo[], stopTask?: (sessionId: string, taskId: string) => Promise<void>) =>
       renderToStaticMarkup(createElement(ClaudeTasksPanel, {
         turn: 2,
         t: ((key: string) => key) as never,
@@ -934,6 +934,41 @@ describe('Claude sidecar conversation projection', () => {
       .not.toContain('dsh-claude-task-stop')
     expect(panel([{ taskId: 'live', description: 'Watch logs', status: 'running', originTurn: 2, backgrounded: true }]))
       .not.toContain('dsh-claude-task-stop')
+  })
+
+  it('draws a TodoWrite call as a checklist instead of raw JSON', () => {
+    const tool = {
+      toolUseId: 'todo-1',
+      toolName: 'TodoWrite',
+      description: 'Updated todos (1/3 done)',
+      phase: 'completed' as const,
+      input: JSON.stringify({ todos: [
+        { content: 'Read the issue', status: 'completed', activeForm: 'Reading the issue' },
+        { content: 'Fix the parser', status: 'in_progress', activeForm: 'Fixing the parser' },
+        { content: 'Run the tests', status: 'pending', activeForm: 'Running the tests' },
+        { content: '', status: 'pending' },
+      ] }),
+      output: 'Todos have been modified successfully.',
+      subcalls: [],
+    }
+    const markup = renderToStaticMarkup(createElement(ClaudeTranscriptToolItem, { tool, t: ((key: string) => key) as never }))
+    expect(markup).toContain('dsh-claude-todo-list')
+    expect(markup).toContain('Read the issue')
+    expect(markup).toContain('data-status="in_progress"')
+    expect(markup).toContain('data-status="completed"')
+    // An entry with no content is not a task, and the raw payload is gone.
+    expect(markup.match(/dsh-claude-todo-item\b/gu)).toHaveLength(3)
+    // The list is the payload; its raw JSON never reaches the card.
+    expect(markup).not.toContain('activeForm')
+    expect(todoItems({ todos: [{ content: 'x', status: 'unknown' }] })).toEqual([{ content: 'x', status: 'pending' }])
+    expect(todoItems('nonsense')).toEqual([])
+
+    // The collapsed tool row says how far through the list Claude is.
+    const items = transcriptItemsForStep([
+      { turn: 2, step: 1, ordinal: 1, kind: 'tool-call', phase: 'started', toolUseId: 'todo-1', toolName: 'TodoWrite', detail: tool.input },
+      { turn: 2, step: 1, ordinal: 2, kind: 'tool-result', phase: 'completed', toolUseId: 'todo-1', detail: 'Todos have been modified successfully.' },
+    ], 2, 1)
+    expect(items[0]).toMatchObject({ kind: 'tools', tools: [{ description: 'Updated todos (1/3 done)' }] })
   })
 
   it('publishes one marker when a Claude turn contains multiple assistant steps', async () => {
