@@ -6,6 +6,7 @@ import {
   type PermissionMode,
   type Query,
   type SDKControlGetContextUsageResponse,
+  type SDKControlInterruptResponse,
   type SDKMessage,
   type SDKUserMessage,
   type Settings as ClaudeSettings,
@@ -227,6 +228,9 @@ interface SupervisorEntry {
   lastChainUuid: string | undefined
   /** Whether this process consumed an armed rewind fork target at spawn. */
   consumedRewind: boolean
+  /** Prompt uuid of the turn a cancelled interrupt settled, whose own `result`
+   *  can still arrive after the next turn on this process has started. */
+  interruptedPromptUuid: string | undefined
   /** Live Claude task board (subagents and background tasks), keyed by task id. */
   tasks: Map<string, ClaudeTaskInfo>
   /** Last time a task snapshot was persisted (progress throttling). */
@@ -1017,6 +1021,7 @@ export class ClaudeSupervisor {
       expectedResume: startFresh || forkAt !== undefined ? undefined : binding?.claudeSessionId,
       lastChainUuid: undefined,
       consumedRewind: pendingRewind !== undefined,
+      interruptedPromptUuid: undefined,
       initialized: false,
       idleTimer: undefined,
       tasks: new Map<string, ClaudeTaskInfo>(),
@@ -1167,6 +1172,10 @@ export class ClaudeSupervisor {
         return
       }
       if (message.userMessageUuid !== undefined && message.userMessageUuid !== active.promptUuid) {
+        // The cancelled turn's own result, settling after this process picked up
+        // the next one: it named the prompt an interrupt already failed, so it
+        // must not be read as a protocol violation against the live request.
+        if (message.userMessageUuid === entry.interruptedPromptUuid) return
         // A stale internal continuation must not settle the explicit final
         // report request. Primary-turn mismatches remain protocol failures.
         if (active.phase === 'follow-up') return
@@ -1291,6 +1300,13 @@ export class ClaudeSupervisor {
             ...(message.durationMs === undefined ? {} : { durationMs: message.durationMs }),
           },
         })
+        return
+      case 'progress':
+        // A progress frame has already done its one job above: `sawActivity`
+        // separates an unknown outcome from a clean disconnect when the CLI dies
+        // mid-turn. Nothing durable follows from it — the SDK emits these per
+        // estimated thinking-token chunk, and every durable row would cost a
+        // full sidecar rewrite.
         return
       case 'status':
       case 'warning':
@@ -1822,6 +1838,16 @@ export class ClaudeSupervisor {
     }
   }
 
+  /** Stop the turn a cancelled DSH request owns.
+   *
+   *  `interrupt()` only stops the current turn: the process itself stays usable,
+   *  which is what makes "stop, then ask something else" cheap. So a clean
+   *  interrupt — one the CLI answers with a receipt that does not list the
+   *  submitted prompt as still queued — leaves the process idle and owned, and
+   *  the next turn reuses it instead of respawning Claude and resuming the
+   *  session from disk. Every other outcome (a CLI too old to answer, a prompt
+   *  the CLI kept queued, a timed-out interrupt) leaves the process in a state
+   *  this plugin cannot vouch for, and it is torn down exactly as before. */
   async #interrupt(entry: SupervisorEntry): Promise<void> {
     const active = entry.active
     if (active === undefined || entry.state === 'interrupting') return
@@ -1830,8 +1856,9 @@ export class ClaudeSupervisor {
     active.output.fail(abortFailure())
     await this.#upsertTranscriptText(active)
     let interruptError: unknown
+    let receipt: SDKControlInterruptResponse | undefined
     try {
-      const receipt = await withTimeout(entry.query.interrupt(), CLAUDE_INTERRUPT_TIMEOUT_MS, 'Claude Code interrupt')
+      receipt = await withTimeout(entry.query.interrupt(), CLAUDE_INTERRUPT_TIMEOUT_MS, 'Claude Code interrupt')
       const queued = receipt?.still_queued ?? []
       if (queued.includes(active.promptUuid)) {
         throw new Error(`Claude Code interrupt left submitted prompt ${active.promptUuid} queued`)
@@ -1840,15 +1867,31 @@ export class ClaudeSupervisor {
       interruptError = error
     }
     await this.#settleOpenCalls(active, 'Cancelled with the turn').catch(() => undefined)
+    // The CLI settles the cancelled turn with a result of its own, which can land
+    // after the next turn on this process has started; remember whose it is. The
+    // chain anchor goes with it: it described the turn that no longer counts.
+    entry.interruptedPromptUuid = active.promptUuid
+    entry.lastChainUuid = undefined
+    if (active.signal !== undefined && active.abortListener !== undefined) {
+      active.signal.removeEventListener('abort', active.abortListener)
+    }
+    const reusable = interruptError === undefined && receipt !== undefined
     try {
       await this.#appendActivity(active, {
         kind: 'status',
         phase: 'failed',
-        title: interruptError === undefined ? 'Claude Code turn cancelled' : 'Claude Code cancelled; process entry reset',
+        title: reusable ? 'Claude Code turn cancelled' : 'Claude Code cancelled; process entry reset',
         ...(interruptError === undefined ? {} : { summary: errorSummary(interruptError) }),
       })
     } catch {
       // The active output is already aborted; process cleanup cannot wait for audit availability.
+    }
+    entry.active = undefined
+    if (reusable && this.#entries.get(entry.sessionId) === entry) {
+      entry.state = 'idle'
+      entry.lastUsedAt = Date.now()
+      this.#armIdleTimer(entry)
+      return
     }
     if (this.#entries.get(entry.sessionId) === entry) this.#entries.delete(entry.sessionId)
     await this.#disposeEntry(entry)

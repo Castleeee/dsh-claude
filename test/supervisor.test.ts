@@ -30,7 +30,9 @@ import {
 } from '../src/supervisor.ts'
 
 class FakeQuery extends AsyncQueue<SDKMessage> {
-  readonly interrupt = vi.fn(async () => undefined)
+  /** What Claude Code 2.1.x answers: a receipt that lists nothing still queued,
+   *  which is the CLI saying it stopped processing the submitted prompt. */
+  readonly interrupt = vi.fn(async () => ({ still_queued: [] as string[] }))
   readonly setModel = vi.fn(async () => undefined)
   readonly setPermissionMode = vi.fn(async () => undefined)
   readonly initializationResult = vi.fn(async () => ({
@@ -203,6 +205,16 @@ const init = (sessionId = 'claude-session-1') => ({
 const delta = (text: string) => ({
   type: 'stream_event',
   event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+}) as SDKMessage
+
+/** One live thinking-token estimate, as the CLI streams it while it thinks. */
+const progress = (estimatedTokens: number) => ({
+  type: 'system',
+  subtype: 'thinking_tokens',
+  estimated_tokens: estimatedTokens,
+  estimated_tokens_delta: 2,
+  uuid: randomUUID(),
+  session_id: 'claude-session-1',
 }) as SDKMessage
 
 const result = (text = 'hello', sessionId = 'claude-session-1') => ({
@@ -1718,7 +1730,10 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it('tears down the submitted turn when DSH aborts', async () => {
+  it('keeps the process for the next turn after a clean interrupt', async () => {
+    // The receipt confirmed the submitted prompt is gone, so the process is idle
+    // and still holds the session: the next turn reuses it instead of respawning
+    // Claude and resuming the session from disk.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -1728,7 +1743,85 @@ describe('Claude supervisor', () => {
     controller.abort()
     await expect(collect(output)).rejects.toMatchObject({ name: 'AbortError' })
     expect(query.interrupt).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(runtime.snapshots().map(item => item.state)).toEqual(['idle']))
+    const next = await runtime.runTurn({ agent: owner.agent, prompt: 'second question' })
+    query.push(init())
+    query.push(delta('second answer'))
+    query.push(result('second answer'))
+    await expect(collect(next)).resolves.toBeDefined()
+    expect(transport.queries).toHaveLength(1)
+    expect((await projection(runtime)).activities.some(activity => activity.kind === 'text')).toBe(true)
+    await runtime.dispose()
+  })
+
+  it('tears the process down when the interrupt answers without a receipt', async () => {
+    // An older CLI resolves `undefined`, which says nothing about whether the
+    // cancelled prompt is really gone; that process is not trusted afterwards.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const controller = new AbortController()
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task', signal: controller.signal })
+    transport.queries[0]!.interrupt.mockResolvedValue(undefined)
+    controller.abort()
+    await expect(collect(output)).rejects.toMatchObject({ name: 'AbortError' })
     await vi.waitFor(() => expect(runtime.snapshots()).toHaveLength(0))
+    await runtime.dispose()
+  })
+
+  it('ignores the result that settles the turn a clean interrupt cancelled', async () => {
+    // The CLI answers every turn it started, including one DSH aborted — and that
+    // answer can land after this process has already picked up the next turn. It
+    // must not be read as a protocol violation against the live request.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const controller = new AbortController()
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task', signal: controller.signal })
+    const query = transport.queries[0]!
+    const iterator = query.input[Symbol.asyncIterator]()
+    const submitted = await iterator.next()
+    const cancelledUuid = submitted.value?.uuid ?? ''
+    controller.abort()
+    await expect(collect(output)).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(runtime.snapshots().map(item => item.state)).toEqual(['idle']))
+    const next = await runtime.runTurn({ agent: owner.agent, prompt: 'second question' })
+    query.push(init())
+    query.push({
+      type: 'result',
+      subtype: 'error_during_execution',
+      session_id: 'claude-session-1',
+      user_message_uuid: cancelledUuid,
+      result: '',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    } as SDKMessage)
+    query.push(delta('second answer'))
+    query.push(result('second answer'))
+    await expect(collect(next)).resolves.toBeDefined()
+    await runtime.dispose()
+  })
+
+  it('keeps thinking-token telemetry out of the activity log', async () => {
+    // The CLI streams one of these per estimated thinking-token chunk, so a
+    // single extended-thinking step can produce tens of thousands of frames.
+    // Storing them made each frame rewrite the whole sidecar while the
+    // transcript drew none of them.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'think hard' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(progress(128))
+    query.push(progress(130))
+    query.push(delta('done'))
+    query.push(result('done'))
+    await collect(output)
+    const activities = (await projection(runtime)).activities
+    expect(activities.map(activity => activity.title)).not.toContain('Claude Code thinking tokens')
+    // The turn itself is untouched: its prose still landed.
+    expect(activities.some(activity => activity.kind === 'text')).toBe(true)
     await runtime.dispose()
   })
 
