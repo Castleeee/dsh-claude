@@ -247,6 +247,7 @@ describe('Claude SDK message normalization', () => {
   it('preserves unknown message types as bounded-normalization inputs', () => {
     expect(normalizeSdkMessage(sdk({ type: 'future_message', value: 1 }))).toEqual([{
       kind: 'unknown',
+      type: 'future_message',
       title: 'Unknown Claude SDK message: future_message',
       detail: { type: 'future_message', value: 1 },
     }])

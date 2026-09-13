@@ -254,6 +254,10 @@ interface SupervisorEntry {
   /** Prompt uuid of the turn a cancelled interrupt settled, whose own `result`
    *  can still arrive after the next turn on this process has started. */
   interruptedPromptUuid: string | undefined
+  /** SDK message types this process has already reported as unknown, so a type
+   *  that arrives in a batch leaves one row of evidence instead of one per
+   *  frame. A later process records its own first sighting. */
+  reportedUnknownTypes: Set<string>
   /** Live Claude task board (subagents and background tasks), keyed by task id. */
   tasks: Map<string, ClaudeTaskInfo>
   /** Last time a task snapshot was persisted (progress throttling). */
@@ -1069,6 +1073,7 @@ export class ClaudeSupervisor {
       lastChainUuid: undefined,
       consumedRewind: pendingRewind !== undefined,
       interruptedPromptUuid: undefined,
+      reportedUnknownTypes: new Set<string>(),
       initialized: false,
       idleTimer: undefined,
       tasks: new Map<string, ClaudeTaskInfo>(),
@@ -1362,9 +1367,22 @@ export class ClaudeSupervisor {
         // estimated thinking-token chunk, and every durable row would cost a
         // full sidecar rewrite.
         return
+      case 'unknown': {
+        // The CLI grows message types steadily, and a new one arrives in batches
+        // of identical frames. One row per type is the evidence worth keeping;
+        // the repetitions are noise the transcript never draws anyway.
+        if (entry.reportedUnknownTypes.has(message.type)) return
+        entry.reportedUnknownTypes.add(message.type)
+        await this.#appendActivity(active, {
+          kind: 'warning',
+          phase: 'completed',
+          title: message.title,
+          detail: message.detail,
+        })
+        return
+      }
       case 'status':
       case 'warning':
-      case 'unknown':
         // One-shot notices (an API retry, a hook echo) have no later event to
         // close them, so they must land settled: an 'updated' phase reads as
         // still running in the transcript forever.

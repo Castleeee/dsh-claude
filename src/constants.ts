@@ -21,6 +21,11 @@ export const SDK_VERSION = '0.3.247'
  *  progress and kept out of the activity log. */
 export const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(['thinking_tokens'])
 
+/** Title prefix this package gives a message type it does not handle yet. Shared
+ *  by the writer and by the projection prune, so a notice row can be recognized
+ *  without re-deriving the template. */
+export const CLAUDE_UNKNOWN_MESSAGE_PREFIX = 'Unknown Claude SDK message: '
+
 /** Durable status title this package writes for a system subtype. Shared by the
  *  writer and by the filter that drops a progress subtype's rows, so the two can
  *  never drift apart. */

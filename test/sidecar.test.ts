@@ -53,8 +53,10 @@ describe('Claude sidecar repository', () => {
         // Tool-progress telemetry as the unknown-type fallback filed it before
         // the message type was classified.
         { turn: 1, step: 1, ordinal: 3, kind: 'warning', phase: 'completed', title: 'Unknown Claude SDK message: tool_progress' },
-        // An unknown type this package does not claim is still evidence, and stays.
+        // An unknown type this package does not claim is still evidence, so the
+        // first sighting stays and its repetitions do not.
         { turn: 1, step: 1, ordinal: 5, kind: 'warning', phase: 'completed', title: 'Unknown Claude SDK message: command_lifecycle' },
+        { turn: 1, step: 1, ordinal: 6, kind: 'warning', phase: 'completed', title: 'Unknown Claude SDK message: command_lifecycle' },
       ],
     })}\n`)
     const projection = await store.read('session')

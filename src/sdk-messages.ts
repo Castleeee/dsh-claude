@@ -1,6 +1,6 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ClaudeUsage } from './events.ts'
-import { CLAUDE_PROGRESS_SUBTYPES, claudeStatusTitle } from './constants.ts'
+import { CLAUDE_PROGRESS_SUBTYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, claudeStatusTitle } from './constants.ts'
 
 export type NormalizedSdkMessage =
   | { kind: 'init'; sessionId: string; cliVersion: string; cwd: string }
@@ -61,7 +61,15 @@ export type NormalizedSdkMessage =
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
   | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
   | { kind: 'protocol-error'; title: string; detail: unknown }
-  | { kind: 'unknown'; title: string; detail: unknown }
+  | {
+    /** A message type this package does not handle yet. `type` is what the
+     *  supervisor dedupes on: the CLI repeats these in batches, and one piece of
+     *  evidence per session is worth keeping where a row per frame is not. */
+    kind: 'unknown'
+    type: string
+    title: string
+    detail: unknown
+  }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined
@@ -460,7 +468,8 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     // see CLAUDE_PROGRESS_SUBTYPES.
     return [{ kind: 'progress', subtype: 'tool_progress' }]
   }
-  return [{ kind: 'unknown', title: `Unknown Claude SDK message: ${String(value.type)}`, detail: value }]
+  const unknownType = String(value.type)
+  return [{ kind: 'unknown', type: unknownType, title: `${CLAUDE_UNKNOWN_MESSAGE_PREFIX}${unknownType}`, detail: value }]
 }
 
 export function extractSdkContentText(content: unknown): string {
