@@ -454,6 +454,12 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       detail: value.rate_limit_info,
     }]
   }
+  if (value.type === 'tool_progress') {
+    // Heartbeats the CLI emits while a tool runs (elapsed time, task id). Same
+    // telemetry class as the thinking-token frames, and equally unrenderable:
+    // see CLAUDE_PROGRESS_SUBTYPES.
+    return [{ kind: 'progress', subtype: 'tool_progress' }]
+  }
   return [{ kind: 'unknown', title: `Unknown Claude SDK message: ${String(value.type)}`, detail: value }]
 }
 

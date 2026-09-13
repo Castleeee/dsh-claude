@@ -230,10 +230,17 @@ const PROGRESS_STATUS_TITLES: ReadonlySet<string> = new Set(
   [...CLAUDE_PROGRESS_SUBTYPES].map(subtype => claudeStatusTitle(subtype)),
 )
 
+/** The same telemetry under the title it carried before it was classified as
+ *  progress: the unknown-type fallback named those rows after the message type
+ *  and filed them as warnings. */
+const LEGACY_PROGRESS_TITLES: ReadonlySet<string> = new Set([
+  'Unknown Claude SDK message: tool_progress',
+])
+
 function isProgressActivity(activity: ClaudeActivityEvent): boolean {
-  return activity.kind === 'status'
-    && activity.title !== undefined
-    && PROGRESS_STATUS_TITLES.has(activity.title)
+  if (activity.title === undefined) return false
+  if (LEGACY_PROGRESS_TITLES.has(activity.title)) return true
+  return activity.kind === 'status' && PROGRESS_STATUS_TITLES.has(activity.title)
 }
 
 function mergeActivities(
