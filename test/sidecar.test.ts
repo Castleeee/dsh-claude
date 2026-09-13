@@ -249,6 +249,27 @@ describe('Claude sidecar repository', () => {
     unsubscribe()
   })
 
+  it('streams what a running turn is doing without writing any of it', async () => {
+    const store = await repository()
+    const deltas: ClaudeSidecarDelta[] = []
+    const unsubscribe = store.subscribe('session', delta => deltas.push(delta))
+    store.notifyLive('session', { turn: 1, state: 'thinking' })
+    store.notifyLive('session', { turn: 1, state: 'tool', label: 'Bash', elapsedMs: 4_000 })
+    store.notifyLive('session', undefined)
+    expect(deltas).toEqual([
+      { kind: 'live', value: { turn: 1, state: 'thinking' }, seq: 1 },
+      { kind: 'live', value: { turn: 1, state: 'tool', label: 'Bash', elapsedMs: 4_000 }, seq: 2 },
+      { kind: 'live', value: undefined, seq: 3 },
+    ])
+    // A state nobody is watching costs nothing, not even a number.
+    unsubscribe()
+    store.notifyLive('session', { turn: 1, state: 'thinking' })
+    expect(store.sequence('session')).toBe(3)
+    // None of it reaches the document.
+    await expect(readdir(store.root)).resolves.toHaveLength(0)
+    await expect(store.read('session')).resolves.toMatchObject({ activities: [] })
+  })
+
   it('numbers every delta per session so a subscriber can tell one was lost', async () => {
     const store = await repository()
     const seen: { session: string; kind: string; seq: number }[] = []

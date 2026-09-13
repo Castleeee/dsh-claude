@@ -77,9 +77,14 @@ export type NormalizedSdkMessage =
   | {
     /** Progress telemetry the CLI streams while it works (see
      *  {@link CLAUDE_PROGRESS_SUBTYPES}). It proves the turn is alive and
-     *  nothing else: the activity log never keeps it. */
+     *  nothing else: the activity log never keeps it. A tool heartbeat also
+     *  says which tool is running and for how long, which is the one thing a
+     *  reader waiting on a turn wants to know. */
     kind: 'progress'
     subtype: string
+    toolName?: string
+    elapsedMs?: number
+    parentToolUseId?: string
   }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
   | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
@@ -551,10 +556,20 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     }]
   }
   if (value.type === 'tool_progress') {
-    // Heartbeats the CLI emits while a tool runs (elapsed time, task id). Same
-    // telemetry class as the thinking-token frames, and equally unrenderable:
-    // see CLAUDE_PROGRESS_SUBTYPES.
-    return [{ kind: 'progress', subtype: 'tool_progress' }]
+    // Heartbeats the CLI emits while a tool runs (which tool, elapsed time, the
+    // subagent it belongs to). Same telemetry class as the thinking-token
+    // frames and equally unkeepable, but the name and the clock are what a live
+    // indicator shows.
+    const toolName = string(value.tool_name)
+    const elapsedSeconds = finiteNumber(value.elapsed_time_seconds)
+    const parentToolUseId = string(value.parent_tool_use_id)
+    return [{
+      kind: 'progress',
+      subtype: 'tool_progress',
+      ...(toolName === undefined ? {} : { toolName }),
+      ...(elapsedSeconds === undefined ? {} : { elapsedMs: Math.max(0, Math.round(elapsedSeconds * 1_000)) }),
+      ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    }]
   }
   if (value.type === 'command_lifecycle') {
     // Not in the SDK's published union yet, but a real frame the 2.1.2xx CLI

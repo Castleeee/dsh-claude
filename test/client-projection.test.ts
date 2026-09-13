@@ -451,6 +451,39 @@ describe('Claude client sidecar projection', () => {
     store.dispose()
   })
 
+  it('tracks the live state of a running turn and drops it on the next snapshot', async () => {
+    vi.useFakeTimers()
+    const stream = carrier()
+    const { store } = projectionStore([stream])
+    const source = store.source('session')
+    const unsubscribe = source.subscribe(() => {})
+    await flush()
+    stream.push('session', { ...valid, type: 'snapshot', seq: 1 })
+    await flush()
+    stream.push('session', { type: 'live', value: { turn: 2, state: 'thinking' }, seq: 2 })
+    await flush()
+    await vi.advanceTimersByTimeAsync(FRAME_MS)
+    expect(source.getSnapshot().live).toEqual({ turn: 2, state: 'thinking' })
+    stream.push('session', { type: 'live', value: { turn: 2, state: 'tool', label: 'Bash', elapsedMs: 4_000 }, seq: 3 })
+    await flush()
+    await vi.advanceTimersByTimeAsync(FRAME_MS)
+    expect(source.getSnapshot().live).toEqual({ turn: 2, state: 'tool', label: 'Bash', elapsedMs: 4_000 })
+    // An absent value is the turn saying it has nothing left to report.
+    stream.push('session', { type: 'live', seq: 4 })
+    await flush()
+    await vi.advanceTimersByTimeAsync(FRAME_MS)
+    expect(source.getSnapshot().live).toBeUndefined()
+    // A live state a hostile carrier invented is refused the same way any other
+    // malformed payload is.
+    stream.push('session', { type: 'live', value: { turn: 2, state: 'exploding' }, seq: 5 })
+    await flush()
+    await vi.advanceTimersByTimeAsync(FRAME_MS)
+    expect(source.getSnapshot().live).toBeUndefined()
+    unsubscribe()
+    stream.close()
+    store.dispose()
+  })
+
   it('reconnects with a fresh snapshot after the carrier ends', async () => {
     vi.useFakeTimers()
     const first = carrier()

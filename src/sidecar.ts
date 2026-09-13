@@ -15,6 +15,7 @@ import {
   type ClaudeActivityInput,
   type ClaudeContextUsageEvent,
   type ClaudeContextUsageInput,
+  type ClaudeLiveProgress,
   type ClaudeSessionBoundEvent,
   type ClaudeTaskInfo,
   type ClaudeTasksEvent,
@@ -60,6 +61,11 @@ export type ClaudeSidecarDelta =
   | { kind: 'tasks'; value: ClaudeTasksEvent }
   | { kind: 'sync' }
   | { kind: 'checkpoint' }
+  /** What the session's running turn is doing right now, or `undefined` when it
+   *  is doing nothing any more. Never written: it is a state a reader watches,
+   *  not evidence, and the next snapshot is authoritative about everything
+   *  else. */
+  | { kind: 'live'; value: ClaudeLiveProgress | undefined }
 
 /** One delta as subscribers see it: numbered, so a reader that applies them in
  *  order can tell a missing one from a slow one.
@@ -373,6 +379,16 @@ export class ClaudeSidecarRepository {
       this.#flushTimers.delete(sessionId)
     }
     return this.#flushLive(sessionId)
+  }
+
+  /** Publish what the session's running turn is doing, without writing
+   *  anything: the state changes many times a second and none of it is worth a
+   *  disk write. With nobody subscribed there is nothing to publish to, and
+   *  skipping keeps the notification count meaningful — the next snapshot
+   *  states where the stream stands either way. */
+  notifyLive(sessionId: string, value: ClaudeLiveProgress | undefined): void {
+    if (this.#listeners.get(sessionId) === undefined) return
+    this.#notify(sessionId, { kind: 'live', value })
   }
 
   /** How many notifications this session has published. */

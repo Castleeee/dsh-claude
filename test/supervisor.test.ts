@@ -236,6 +236,17 @@ const toolCallMessage = {
   },
 } as SDKMessage
 
+/** One tool heartbeat: which tool is running, and for how long. */
+const toolProgress = (seconds: number) => ({
+  type: 'tool_progress',
+  tool_use_id: 'tool-1',
+  tool_name: 'Bash',
+  parent_tool_use_id: null,
+  elapsed_time_seconds: seconds,
+  uuid: randomUUID(),
+  session_id: 'claude-session-1',
+}) as SDKMessage
+
 const toolResultMessage = {
   type: 'user',
   message: {
@@ -2220,6 +2231,70 @@ describe('Claude supervisor', () => {
       ['tool-result', 5, 'tool-2'],
       ['text', 6, 'The cause is clear.'],
     ])
+    await runtime.dispose()
+  })
+
+  it('reports what a running turn is doing, once per change and never to disk', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const live: unknown[] = []
+    const unsubscribe = sidecars.get(runtime)!.subscribe(owner.agent.id as string, delta => {
+      if (delta.kind === 'live') live.push(delta.value)
+    })
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'look around' })
+    const query = transport.queries[0]!
+    query.push(init())
+    // Ten thinking-token estimates for one thought: the state changed once.
+    for (let index = 0; index < 10; index += 1) query.push(progress(index))
+    query.push(toolCallMessage)
+    // A tool heartbeat repeats a state that was already reported: the clock
+    // moved, the state did not, and one second had not passed.
+    query.push(toolProgress(3.5))
+    query.push(toolResultMessage)
+    query.push(delta('done'))
+    query.push(result('done'))
+    await collect(output)
+    expect(live).toEqual([
+      { turn: 1, state: 'thinking' },
+      { turn: 1, state: 'tool', label: 'Bash' },
+      { turn: 1, state: 'waiting' },
+      { turn: 1, state: 'thinking' },
+      undefined,
+    ])
+    unsubscribe()
+    // A state is not evidence: the document holds the turn's rows and no live value.
+    const stored = await projection(runtime)
+    expect(stored.activities).not.toEqual([])
+    expect(stored.activities.some(activity => activity.kind === 'status' && activity.title === 'Claude Code is thinking')).toBe(false)
+    await runtime.dispose()
+  })
+
+  it("republishes a running tool's clock at most once a second", async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const live: unknown[] = []
+    const unsubscribe = sidecars.get(runtime)!.subscribe(owner.agent.id as string, delta => {
+      if (delta.kind === 'live') live.push(delta.value)
+    })
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'look around' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(toolCallMessage)
+    await vi.waitFor(() => expect(live).toEqual([{ turn: 1, state: 'tool', label: 'Bash' }]))
+    // Inside the window the heartbeat is dropped rather than forwarded.
+    query.push(toolProgress(4))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(live).toHaveLength(1)
+    // Past it, the clock is worth publishing again.
+    await new Promise(resolve => setTimeout(resolve, 1_000))
+    query.push(toolProgress(5))
+    await vi.waitFor(() => expect(live).toHaveLength(2))
+    expect(live.at(-1)).toEqual({ turn: 1, state: 'tool', label: 'Bash', elapsedMs: 5_000 })
+    query.push(result('done'))
+    await collect(output)
+    unsubscribe()
     await runtime.dispose()
   })
 

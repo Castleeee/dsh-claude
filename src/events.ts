@@ -91,6 +91,43 @@ export interface ClaudeContextUsageCategory {
   isDeferred?: boolean
 }
 
+/** What one Claude turn is doing right now.
+ *
+ *  This is deliberately NOT part of the activity log: it is a state, not
+ *  evidence, and it changes many times per step (the CLI streams a thinking
+ *  estimate per token chunk). It travels as a live projection delta, is never
+ *  written, and is cleared when the turn it belongs to settles — so a reader
+ *  watching a turn has something that moves without a row per frame. */
+export interface ClaudeLiveProgress {
+  /** The turn this state belongs to: a transcript turn shows the pill only for
+   *  its own turn. */
+  readonly turn: number
+  /** `thinking` while the model works, `tool` while one of its tools runs,
+   *  `waiting` between them (a tool result being folded back in). */
+  readonly state: 'thinking' | 'tool' | 'waiting'
+  /** The tool that is running, for `tool`. */
+  readonly label?: string
+  /** How long the CLI says the current tool has been running. */
+  readonly elapsedMs?: number
+}
+
+const LIVE_STATES: ReadonlySet<string> = new Set(['thinking', 'tool', 'waiting'])
+
+/** Read a live state off the wire, or nothing when it does not describe one. */
+export function normalizeLiveProgress(value: unknown): ClaudeLiveProgress | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const input = value as Record<string, unknown>
+  if (!Number.isSafeInteger(input.turn) || (input.turn as number) < 0) return undefined
+  if (typeof input.state !== 'string' || !LIVE_STATES.has(input.state)) return undefined
+  const elapsed = input.elapsedMs
+  return {
+    turn: input.turn as number,
+    state: input.state as ClaudeLiveProgress['state'],
+    ...(typeof input.label !== 'string' || input.label.length === 0 ? {} : { label: input.label.slice(0, 128) }),
+    ...(typeof elapsed !== 'number' || !Number.isFinite(elapsed) || elapsed < 0 ? {} : { elapsedMs: Math.floor(elapsed) }),
+  }
+}
+
 export interface ClaudeContextUsageEvent {
   model: string
   totalTokens: number
