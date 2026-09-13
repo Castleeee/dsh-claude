@@ -288,6 +288,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     config: supervisorConfig,
     runDetached: operation => ctx.agents.withoutInitiator(operation),
     sidecar,
+    // A CLI that dies mid-turn is diagnosed from the log, not from the
+    // conversation it was in the middle of.
+    logger: { warn: message => { ctx.logger.warn(message) } },
     // A steered message resolves its attachments through the same code path a
     // turn's own prompt does, so its image limits and file wording cannot drift.
     attachments: ctx.attachments,
