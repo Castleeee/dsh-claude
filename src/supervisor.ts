@@ -265,8 +265,12 @@ interface ActiveTurn {
   /** Stable sidecar ordinal reused while the current assistant segment grows. */
   transcriptTextOrdinal: number | undefined
   thinking: string
-  /** Newest single-call prompt accounting; what DSH's context meter divides. */
-  requestUsage: ClaudeUsage | undefined
+  /** What the CLI spent inside the API for this turn, summed over the results
+   *  it produced, and how many model calls those were. One DSH step here spans
+   *  a whole Claude turn, so these are the only per-turn facts that can carry a
+   *  real generation rate. */
+  apiMs: number
+  modelCalls: number
   /** When this turn was admitted, and when it first put a token on screen.
    *  The transcript has no other clock: activities carry no timestamps. */
   startedAt: number
@@ -912,7 +916,8 @@ export class ClaudeSupervisor {
       transcriptText: '',
       transcriptTextOrdinal: undefined,
       thinking: '',
-      requestUsage: undefined,
+      apiMs: 0,
+      modelCalls: 0,
       startedAt: Date.now(),
       firstOutputAt: undefined,
       aborted: false,
@@ -1396,6 +1401,7 @@ export class ClaudeSupervisor {
         // emit a top-level result, correlated or not. Publish that prose as a
         // completed progress block, but keep the original DSH turn open until
         // every owned task settles and the explicit final report returns.
+        this.#tallyResult(active, message)
         await this.#completeProgressSegment(active, message)
         return
       }
@@ -1413,9 +1419,11 @@ export class ClaudeSupervisor {
       // runs. Publish what this result said and keep the turn open: the queued
       // send's own result ends it.
       if ((message.queuedTurnCount ?? 0) > 0) {
+        this.#tallyResult(active, message)
         await this.#completeProgressSegment(active, message)
         return
       }
+      this.#tallyResult(active, message)
       await this.#completeTurn(entry, active, message)
       return
     }
@@ -1518,20 +1526,14 @@ export class ClaudeSupervisor {
           isError: message.phase === 'failed',
         })
         return
-      case 'request-usage': {
-        // A subagent call bills against its own context, so it never stands in
-        // for the main conversation's size.
-        if (message.parentToolUseId !== undefined) return
-        // A sample with no prompt is not a measurement: the CLI forwards
-        // placeholder usage on assistant messages, and letting one land here
-        // would replace the last real request with a zero. The newest real
-        // sample is the prompt the Host divides by the window.
-        const prompt = (message.usage.inputTokens ?? 0)
-          + (message.usage.cacheReadTokens ?? 0)
-          + (message.usage.cacheCreationTokens ?? 0)
-        if (prompt > 0) active.requestUsage = message.usage
+      case 'request-usage':
+        // The CLI's per-call prompt sample: the only real per-request usage it
+        // emits, and what this plugin's own meter would be divided by — except
+        // that meter is built from the CLI's context report instead, and DSH is
+        // deliberately told no prompt side at all (see `#reportedUsage`). A
+        // message shape that no longer feeds anything is still a known shape:
+        // it is absorbed here so it cannot be drawn as an activity.
         return
-      }
       case 'compaction':
         // Close the open prose span first: compaction sits *between* what was
         // said before and after it, never inside one text segment.
@@ -1680,8 +1682,37 @@ export class ClaudeSupervisor {
       ...usage,
       durationMs: Math.max(0, now - active.startedAt),
       ...(active.firstOutputAt === undefined ? {} : { ttftMs: Math.max(0, active.firstOutputAt - active.startedAt) }),
+      ...(active.apiMs === 0 ? {} : { apiMs: active.apiMs }),
+      ...(active.modelCalls === 0 ? {} : { modelCalls: active.modelCalls }),
     }
   }
+
+  /** Fold one of the turn's results into the turn's own running facts.
+   *
+   *  `num_turns` is that result's own model calls, and they simply add up: one
+   *  DSH step here spans a whole Claude turn, so the session's statistics are
+   *  the sum of what its results did. `duration_api_ms` is NOT per result like
+   *  that — it is cumulative per query() call, exactly like the cost counter, so
+   *  it is read as an epoch delta: a reading lower than the last one belongs to
+   *  a process that just started.
+   *
+   *  Both are what a generation rate needs, and neither can be derived on the
+   *  client: the wall clock here covers tool execution, and the client has no
+   *  timestamps at all. */
+  #tallyResult(active: ActiveTurn, result: Extract<NormalizedSdkMessage, { kind: 'result' }>): void {
+    if (result.modelCalls !== undefined) active.modelCalls += Math.max(0, result.modelCalls)
+    if (result.apiMs === undefined) return
+    const sessionId = active.agent.id as string
+    const previous = this.#apiCounter.get(sessionId)
+    this.#apiCounter.set(sessionId, result.apiMs)
+    const delta = previous === undefined || result.apiMs < previous ? result.apiMs : result.apiMs - previous
+    active.apiMs += Math.max(0, delta)
+  }
+
+  /** The newest cumulative `duration_api_ms` reading per session. Kept per
+   *  session rather than per turn because the counter outlives the turn it is
+   *  read in, and resets when the process is replaced. */
+  readonly #apiCounter = new Map<string, number>()
 
   /** Register one presenter-only mirror for a tool name the static preset
    *  registry does not cover (MCP tools, newly added built-ins). Runs in the
@@ -1866,33 +1897,34 @@ export class ClaudeSupervisor {
     await this.#sidecar.writeTasks(entry.sessionId, [...entry.tasks.values()]).catch(() => undefined)
   }
 
-  /** What DSH is told about token usage: newest call's prompt, whole turn's output.
+  /** What DSH is told about token usage: the turn's output, and a zero prompt.
    *
-   *  `TokenUsage` is documented as "token accounting for ONE model call", and
-   *  DSH's token meter divides `uncachedInput + cacheRead + cacheWrite` by the
-   *  context window to draw context pressure. One Claude turn makes many calls
-   *  and the CLI's result usage sums all of them, so reporting that sum pinned
-   *  the meter at 100%: a 35-call turn reads the same prompt from cache 35
-   *  times, which sums past the window without the conversation ever growing.
-   *  The newest single call answers "how big is this conversation now".
+   *  `TokenUsage` is documented as accounting for ONE model call, and DSH's
+   *  token meter divides `uncachedInput + cacheRead + cacheWrite` by the context
+   *  window to draw pressure — the number its compaction engine acts on above
+   *  80% of that window. One Claude turn makes many calls, so the prompt side of
+   *  a result is a sum that pins the meter over the window; the newest single
+   *  call answers "how big is this conversation now" and would put a session
+   *  that is genuinely large over the threshold.
    *
-   *  Output is deliberately excluded from that pressure sum, so the same
-   *  argument never applied to it — and taking it from the newest call reported
-   *  whatever the wrap-up message happened to cost, which is a couple of tokens
-   *  after a turn that wrote thousands. The turn total is the honest figure.
+   *  Either way the number describes a context DSH does not hold: this preset's
+   *  conversation lives in Claude Code, which compacts on its own, and the plugin
+   *  reports the CLI's occupancy in its own meter. Reporting the prompt side only
+   *  bought a compaction attempt that this plugin's adapter must refuse. So the
+   *  preset reports the output side alone — the prompt side is zero, pressure
+   *  stays at nothing, DSH's compaction never engages on a session whose context
+   *  belongs to the CLI, and every user-facing figure for this preset comes from
+   *  the plugin's own reading of the CLI, in the statistics it draws above the
+   *  composer.
    *
-   *  The sidecar activity keeps the whole turn total for both — that is the
-   *  audit and cost record, and nothing divides it by a window. */
-  #reportedUsage(
-    active: ActiveTurn,
-    result: Extract<NormalizedSdkMessage, { kind: 'result' }>,
-  ): ClaudeUsage {
-    const prompt = active.requestUsage
-    if (prompt === undefined) return result.usage
-    return {
-      ...prompt,
-      ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }),
-    }
+   *  The sidecar activity keeps the whole turn total — input, cache, and output —
+   *  because that is the audit and cost record, and nothing divides it by a
+   *  window. */
+  #reportedUsage(result: Extract<NormalizedSdkMessage, { kind: 'result' }>): ClaudeUsage {
+    // Both numbers are always present: DSH's meter folds them into buckets that
+    // its schema requires to be numbers, and a missing input would fail the fold
+    // rather than read as nothing.
+    return { inputTokens: 0, outputTokens: result.usage.outputTokens ?? 0 }
   }
 
   async #completeProgressSegment(
@@ -1936,7 +1968,7 @@ export class ClaudeSupervisor {
       summary: usageSummary(usage),
       usage: this.#timedUsage(active, usage),
     })
-    active.output.push({ type: 'usage', usage: this.#reportedUsage(active, result) })
+    active.output.push({ type: 'usage', usage: this.#reportedUsage(result) })
   }
 
   /** Cost spent by previous processes of this session, and the newest counter

@@ -2,6 +2,7 @@ import { JSDOM } from 'jsdom'
 import { describe, expect, it } from 'vitest'
 
 import { HOST_CHROME_CSS } from '../src/client/host-chrome.ts'
+import { CLAUDE_SESSION_ATTRIBUTE } from '../src/client/session-mark.ts'
 
 /** The composer's trailing row the way the Host draws it (Host 2.0.9):
  *
@@ -62,8 +63,8 @@ function composer(): {
     hostMeter: document.querySelector('.JdJrwG_root') as Element,
     submit: document.querySelector('.Q7WfXG_primary') as Element,
     document,
-    on: () => { document.body.dataset.dshClaudeContextMeter = '' },
-    off: () => { delete document.body.dataset.dshClaudeContextMeter },
+    on: () => { document.body.setAttribute(CLAUDE_SESSION_ATTRIBUTE, '') },
+    off: () => { document.body.removeAttribute(CLAUDE_SESSION_ATTRIBUTE) },
   }
 }
 

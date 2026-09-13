@@ -41,6 +41,13 @@ export interface ClaudeUsage {
   durationMs?: number
   /** Wall time to the first visible token of the turn. */
   ttftMs?: number
+  /** API milliseconds the CLI spent in this turn's model calls, excluding tool
+   *  execution and process time. The CLI reports the counter cumulatively per
+   *  process, so this is the turn's share of it. */
+  apiMs?: number
+  /** Model calls the turn made: one DSH step here is a whole Claude turn, and
+   *  this is how many round trips were inside it. */
+  modelCalls?: number
 }
 
 export interface ClaudeSessionBoundEvent {

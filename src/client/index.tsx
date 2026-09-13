@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { claudeActiveTasksDefinition, claudeActivityStepDefinition, claudeTurnDefinition, selectClaudeTurn } from './conversation-sidecar.ts'
 import { ClaudeActivityTail, type ClaudeActivityTailInjected } from './ClaudeActivityTail.tsx'
 import { ClaudeContextMeter } from './ClaudeContextMeter.tsx'
+import { ClaudeStatsPills } from './ClaudeStatsPills.tsx'
 import { ClaudeActiveTasksNode } from './ClaudeActiveTasksNode.tsx'
 import { ClaudeActivityNode } from './ClaudeActivityNode.tsx'
 import { ClaudeCodeSettings, alertModeOf, isGlobalSettingsView, proseModeOf, type ClaudeCodeSettingsInjected } from './ClaudeCodeSettings.tsx'
@@ -30,6 +31,7 @@ import type { ClaudePullRequestsPanelInjected } from './ClaudePullRequestsPanel.
 import { CLAUDE_TAB_KINDS, registerClaudeSidebarTabs } from './sidebar-tabs.tsx'
 import { stopClaudeTask } from './task-api.ts'
 import type { ClaudeContextMeterInjected } from './ClaudeContextMeter.tsx'
+import type { ClaudeStatsPillsInjected } from './ClaudeStatsPills.tsx'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { ClaudeSelectionAsk } from './ClaudeSelectionAsk.tsx'
 import { claudeBootCheckFindings } from './boot-check.ts'
@@ -427,6 +429,19 @@ ${error.stack ?? ''}`
       }
     },
   }, ClaudeRepositoryStatus))
+  // The Host's own statistics row, in the same seat it registers its own into:
+  // "conversation.composer.dock" at order 0. Both of its figures are built from
+  // what DSH assembled, so for this preset the plugin draws the CLI's own
+  // record instead (`ClaudeStatsPills`) and stands the Host's row down. The
+  // entry renders nothing for any other session, which leaves the Host's own
+  // pills exactly as they were there.
+  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+    name: 'conversation.composer.dock',
+    id: 'claude-session-stats',
+    order: 0,
+    locale: namespace,
+    inject: (): ClaudeStatsPillsInjected => ({ t }),
+  }, ClaudeStatsPills))
   // Selection toolbar over assistant replies (copy / ask a follow-up). Root
   // scoped: it resolves the on-screen session itself and only arms inside
   // sessions this plugin owns.

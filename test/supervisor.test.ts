@@ -245,12 +245,14 @@ const progress = (estimatedTokens: number) => ({
   session_id: 'claude-session-1',
 }) as SDKMessage
 
-const result = (text = 'hello', sessionId = 'claude-session-1') => ({
+const result = (text = 'hello', sessionId = 'claude-session-1', facts: { apiMs?: number; modelCalls?: number } = {}) => ({
   type: 'result',
   subtype: 'success',
   session_id: sessionId,
   result: text,
   total_cost_usd: 0.01,
+  ...(facts.apiMs === undefined ? {} : { duration_api_ms: facts.apiMs }),
+  ...(facts.modelCalls === undefined ? {} : { num_turns: facts.modelCalls }),
   usage: { input_tokens: 4, output_tokens: 2 },
 }) as SDKMessage
 
@@ -538,7 +540,7 @@ describe('Claude supervisor', () => {
     await expect(collect(output)).resolves.toEqual([
       { type: 'text-delta', text: 'hel' },
       { type: 'text-delta', text: 'lo' },
-      { type: 'usage', usage: { inputTokens: 4, outputTokens: 2, cumulativeCostUsd: 0.01 } },
+      { type: 'usage', usage: { inputTokens: 0, outputTokens: 2 } },
       { type: 'complete', text: 'hello' },
     ])
     await expect(projection(runtime)).resolves.toMatchObject({
@@ -592,12 +594,15 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it('reports the newest call prompt-side and the whole turn output', async () => {
-    // DSH divides the PROMPT side by the context window. The result usage sums
-    // every call in the turn — here two calls that each re-read the same
-    // prompt from cache — so reporting it would read as a context twice its
-    // real size. Output is not part of that pressure sum, and the last call is
-    // usually a short wrap-up, so the turn total is the honest number there.
+  it('tells the host the output side only, and keeps the turn total in the sidecar', async () => {
+    // DSH divides the PROMPT side by the context window to draw pressure, and
+    // its compaction engine acts above 80% of it. A Claude turn makes many
+    // calls — here two that re-read the same prompt from cache — so the prompt
+    // side of the result reads as a context twice its real size, and the
+    // newest call reaches the threshold for real once the conversation is
+    // large. Either way it describes a context DSH does not hold: this preset's
+    // conversation lives in Claude Code, which compacts on its own. So the host
+    // gets the output side and a zero prompt, and nothing it can compact on.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -629,10 +634,7 @@ describe('Claude supervisor', () => {
     } as SDKMessage)
 
     const events = await collect(output)
-    expect(events).toContainEqual({
-      type: 'usage',
-      usage: { inputTokens: 2, outputTokens: 30, cacheReadTokens: 1_000 },
-    })
+    expect(events).toContainEqual({ type: 'usage', usage: { inputTokens: 0, outputTokens: 30 } })
     // The audit trail still records what the whole turn actually billed, now
     // with the wall clock the transcript footer has no other way to know.
     const snapshot = await projection(runtime)
@@ -649,7 +651,32 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it('falls back to the turn total when no call reported its own usage', async () => {
+  it('records the turn\'s model calls and its own share of the API clock', async () => {
+    // One DSH step spans a whole Claude turn, so the session's statistics have
+    // to be summed from what the results did: `num_turns` is that result's own
+    // model calls, while `duration_api_ms` is cumulative per process — the
+    // second turn's reading covers the first turn's time as well, and only the
+    // difference belongs to it.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const turn = async (text: string, apiMs: number, modelCalls: number) => {
+      const output = await runtime.runTurn({ agent: owner.agent, prompt: text })
+      const query = transport.queries.at(-1)!
+      query.push(init())
+      query.push(result(text, 'claude-session-1', { apiMs, modelCalls }))
+      await collect(output)
+    }
+    await turn('first', 8_000, 4)
+    await turn('second', 15_000, 1)
+
+    const rows = (await projection(runtime)).activities.filter(activity => activity.kind === 'usage')
+    expect(rows.map(row => row.usage?.apiMs)).toEqual([8_000, 7_000])
+    expect(rows.map(row => row.usage?.modelCalls)).toEqual([4, 1])
+    await runtime.dispose()
+  })
+
+  it('reports no prompt side even when no call reported its own usage', async () => {
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -659,7 +686,7 @@ describe('Claude supervisor', () => {
     query.push(result())
     await expect(collect(output)).resolves.toContainEqual({
       type: 'usage',
-      usage: { inputTokens: 4, outputTokens: 2, cumulativeCostUsd: 0.01 },
+      usage: { inputTokens: 0, outputTokens: 2 },
     })
     await runtime.dispose()
   })
@@ -991,11 +1018,11 @@ describe('Claude supervisor', () => {
       usage: { input_tokens: 6, output_tokens: 3 },
     } as SDKMessage)
     const secondEvents = await collect(second)
-    // The SDK total_cost_usd is the running total; we must report 0.03, not 0.01 + 0.03.
-    expect(secondEvents).toContainEqual({
-      type: 'usage',
-      usage: { inputTokens: 6, outputTokens: 3, cumulativeCostUsd: 0.03 },
-    })
+    // The SDK total_cost_usd is the running total; the record must read 0.03,
+    // not 0.01 + 0.03.
+    expect(secondEvents).toContainEqual({ type: 'usage', usage: { inputTokens: 0, outputTokens: 3 } })
+    const rows = (await projection(runtime)).activities.filter(activity => activity.kind === 'usage')
+    expect(rows.map(row => row.usage?.cumulativeCostUsd)).toEqual([0.01, 0.03])
     await runtime.dispose()
   })
 
@@ -2507,11 +2534,11 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it("reports the last request's prompt and the turn's output, not a placeholder zero", async () => {
-    // DSH divides this by the context window, so it has to be one request's
-    // prompt. The result reports the turn's SUM over every request, and the
-    // assistant message carries zeros — the partial frame is the only real
-    // per-request sample there is.
+  it("tells the host only the output side, even when a real per-call sample exists", async () => {
+    // The partial frame is the only real per-request prompt the CLI emits, and
+    // the assistant message that follows it carries placeholder zeros. Neither
+    // reaches the host: the preset reports the output side alone, so DSH has no
+    // pressure to compact on.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -2522,18 +2549,15 @@ describe('Claude supervisor', () => {
     query.push(requestUsage(2_129, 14_080, 67))
     query.push(delta('working'))
     query.push(placeholderUsage())
-    // The newest request's prompt is the conversation's current size, and the
-    // placeholder that follows it must not erase it.
     query.push(requestUsage(179, 16_128, 66))
     query.push({
       ...result('done') as object,
       usage: { input_tokens: 2_308, output_tokens: 133, cache_read_input_tokens: 30_208 },
     } as SDKMessage)
     const events = await collect(output)
-    const usage = events.find(event => event.type === 'usage')
-    expect(usage).toEqual({
+    expect(events.find(event => event.type === 'usage')).toEqual({
       type: 'usage',
-      usage: { inputTokens: 179, cacheReadTokens: 16_128, outputTokens: 133 },
+      usage: { inputTokens: 0, outputTokens: 133 },
     })
     // The sidecar keeps the turn total, which is the audit and cost record.
     const row = (await projection(runtime)).activities.find(activity => activity.kind === 'usage')

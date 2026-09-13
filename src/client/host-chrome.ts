@@ -10,6 +10,7 @@
  */
 import { claudeMarkUrl } from './claude-mark.ts'
 import { CLAUDE_SEAT_ATTRIBUTE, trackClaudePresetSeats } from './preset-seat-mark.ts'
+import { CLAUDE_SESSION_ATTRIBUTE } from './session-mark.ts'
 
 /** The `Session log` capsule is contributed by
  *  `@deepseek-ai/dsh-session-log-export` into
@@ -69,29 +70,43 @@ const HOST_METER_SELECTORS = [
   'span:not([data-dsh-claude-context-meter]):has(button[aria-haspopup="dialog"]>svg[width="14"][height="14"]>circle[cx="7"])',
 ]
 
+/** Everything below stands the Host's own context chrome down for this preset,
+ *  and it is all gated on one attribute: `session-mark.ts` sets it for exactly
+ *  as long as a Claude Session is on screen, so every other preset keeps the
+ *  Host's meter and statistics untouched. */
+const CLAUDE_SESSION = `body[${CLAUDE_SESSION_ATTRIBUTE}]`
+
 /** The Host's composer context meter is built from the request DSH assembled:
  *  its ring and headline are right, but the composition it lists is DSH's own
  *  system prompt, DSH's tool mirrors and the messages DSH can see — which for a
- *  Claude Session is none of the context Claude Code actually holds. It reads
- *  a couple of percent where the CLI reports the real figure.
+ *  Claude Session is none of the context Claude Code actually holds.
  *
- *  `ClaudeContextMeter` draws the same ring from the CLI's own report and marks
- *  the body for exactly as long as a Claude Session is on screen; without that
- *  mark nothing here matches and the Host's meter stands for every other
- *  preset. Within that mark: the Host's ring goes, and this one takes the seat
- *  it had — after the model seat, immediately before the submit buttons.
+ *  `ClaudeContextMeter` draws the same ring from the CLI's own report. Within
+ *  the session mark: the Host's ring goes, and this one takes the seat it had —
+ *  after the model seat, immediately before the submit buttons.
  *
  *  That seat needs no DOM move. The slot anchor wrapping this plugin's meter is
  *  `display:contents`, so the ring is already a flex item of the row and `order`
  *  places it where the Host's meter sat; the Host's own meter is a direct child
  *  of the same row. */
 const CONTEXT_METER_CSS = [
-  ...HOST_METER_SELECTORS.map(selector => `body[data-dsh-claude-context-meter] ${COMPOSER_TRAILING}>${selector}{display:none}`),
-  `body[data-dsh-claude-context-meter] ${COMPOSER_TRAILING} [data-dsh-claude-context-meter]{order:1}`,
-  `body[data-dsh-claude-context-meter] ${COMPOSER_TRAILING}>[class$="_primary"]{order:2}`,
+  ...HOST_METER_SELECTORS.map(selector => `${CLAUDE_SESSION} ${COMPOSER_TRAILING}>${selector}{display:none}`),
+  `${CLAUDE_SESSION} ${COMPOSER_TRAILING} [data-dsh-claude-context-meter]{order:1}`,
+  `${CLAUDE_SESSION} ${COMPOSER_TRAILING}>[class$="_primary"]{order:2}`,
 ].join('')
 
-export const HOST_CHROME_CSS = `${SESSION_LOG_CSS}${HEADER_TABS_CSS}${PRESET_SEAT_CSS}${CONTEXT_METER_CSS}`
+/** The Host's own statistics row — the turn/step and token pills above the
+ *  composer. Both of its figures are built from what DSH assembled and what it
+ *  can see of the request, which for this preset is a pointer to a conversation
+ *  that lives in Claude Code; its own report is what the plugin draws instead,
+ *  in the same dock (`ClaudeStatsPills`).
+ *
+ *  A stable data attribute, unlike the meter: the row marks itself
+ *  `data-composer-stats` in the Host's own markup, so this needs no build-hash
+ *  guess and no shape match. */
+const COMPOSER_STATS_CSS = `${CLAUDE_SESSION} [data-composer-stats]{display:none}`
+
+export const HOST_CHROME_CSS = `${SESSION_LOG_CSS}${HEADER_TABS_CSS}${PRESET_SEAT_CSS}${CONTEXT_METER_CSS}${COMPOSER_STATS_CSS}`
 
 /** Install the stylesheet and the one DOM flag it depends on.
  *  @returns a disposer that removes both again. */

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { HOST_CHROME_CSS } from '../src/client/host-chrome.ts'
 import { CLAUDE_SEAT_ATTRIBUTE } from '../src/client/preset-seat-mark.ts'
+import { CLAUDE_SESSION_ATTRIBUTE } from '../src/client/session-mark.ts'
 
 describe('host chrome suppression', () => {
   it('hides the Host Session log capsule by its CSS Module local name', () => {
@@ -33,7 +34,7 @@ describe('host chrome suppression', () => {
     // so it is matched twice: by the emitted class of the build this was written
     // against, and by the ring it draws (a 14px viewBox inside its own dialog
     // trigger). Either match is enough to remove it.
-    expect(HOST_CHROME_CSS).toContain('body[data-dsh-claude-context-meter] [class*="_trailing"]:has(>[class$="_primary"])>[class*="JdJrwG_root"]{display:none}')
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"])>[class*="JdJrwG_root"]{display:none}`)
     expect(HOST_CHROME_CSS).toContain('svg[width="14"][height="14"]>circle[cx="7"]')
     // That structural match must not catch this plugin's own ring, which draws
     // the same geometry — without the `:not()` it would hide itself.
@@ -42,7 +43,7 @@ describe('host chrome suppression', () => {
     // on the flag, so a session this plugin does not own keeps the Host's own
     // meter.
     for (const rule of HOST_CHROME_CSS.split('}').map(part => part.trim()).filter(Boolean)) {
-      if (rule.includes('JdJrwG_root') || rule.includes('_trailing')) expect(rule.startsWith('body[data-dsh-claude-context-meter]')).toBe(true)
+      if (rule.includes('JdJrwG_root') || rule.includes('_trailing')) expect(rule.startsWith(`body[${CLAUDE_SESSION_ATTRIBUTE}]`)).toBe(true)
     }
   })
 
@@ -51,8 +52,17 @@ describe('host chrome suppression', () => {
     // flex item of the composer's row: `order` puts it straight after the model
     // seat and straight before the submit buttons, which is where the Host's
     // meter sat.
-    expect(HOST_CHROME_CSS).toContain('[class*="_trailing"]:has(>[class$="_primary"]) [data-dsh-claude-context-meter]{order:1}')
-    expect(HOST_CHROME_CSS).toContain('[class*="_trailing"]:has(>[class$="_primary"])>[class$="_primary"]{order:2}')
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"]) [data-dsh-claude-context-meter]{order:1}`)
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"])>[class$="_primary"]{order:2}`)
+  })
+
+  it('stands the Host statistics row down for this preset', () => {
+    // The row marks itself with a data attribute, so unlike the meter it needs
+    // no build-hash guess: one selector, gated on the session mark.
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [data-composer-stats]{display:none}`)
+    for (const rule of HOST_CHROME_CSS.split('}').map(part => part.trim()).filter(Boolean)) {
+      if (rule.includes('data-composer-stats')) expect(rule.startsWith(`body[${CLAUDE_SESSION_ATTRIBUTE}]`)).toBe(true)
+    }
   })
 
   it('restores the slack the tab row used to give the divider', () => {

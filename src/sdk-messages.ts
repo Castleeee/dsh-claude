@@ -97,7 +97,7 @@ export type NormalizedSdkMessage =
     parentToolUseId?: string
   }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
-  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
+  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[]; apiMs?: number; modelCalls?: number }
   | { kind: 'protocol-error'; title: string; detail: unknown }
   | {
     /** A message type this package does not handle yet. `type` is what the
@@ -541,6 +541,13 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     // least one more turn follows without further input, so this result is not
     // the end of the turn.
     const queuedTurnCount = finiteNumber(value.queued_turn_count)
+    // What the model actually did in the turn this result closes: how long the
+    // API calls took (as opposed to `duration_ms`, which also carries tool
+    // execution and process time) and how many round trips it made. They are
+    // the only honest source for a per-turn generation rate, because one DSH
+    // step here spans a whole Claude turn rather than one model call.
+    const apiMs = finiteNumber(value.duration_api_ms)
+    const modelCalls = finiteNumber(value.num_turns)
     const permissionDenials = Array.isArray(value.permission_denials)
       ? value.permission_denials
           .map(item => record(item))
@@ -564,6 +571,8 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       sessionId,
       ...(userMessageUuid === undefined ? {} : { userMessageUuid }),
       ...(queuedTurnCount === undefined ? {} : { queuedTurnCount }),
+      ...(apiMs === undefined || apiMs < 0 ? {} : { apiMs }),
+      ...(modelCalls === undefined || modelCalls < 0 ? {} : { modelCalls }),
     }]
   }
   if (value.type === 'auth_status') {

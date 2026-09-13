@@ -3,6 +3,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ClaudeActivityEvent, ClaudeContextUsageEvent } from '../events.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { ClaudeClientProjection } from './projection.ts'
+import { useClaudeSessionMark } from './session-mark.ts'
 import * as styles from './styles.ts'
 
 /** Ring geometry, matching the Host's own meter: 14px viewBox, 2px stroke. */
@@ -106,13 +107,9 @@ export function ClaudeContextMeter({ useClaudeProjection, t }: ClaudeContextMete
   const available = owned && usage !== undefined
 
   // The Host's meter reads the same window and draws the same ring from a
-  // composition it cannot see for this preset; for as long as this one is
-  // mounted, that one stands down and this one takes its seat in the row.
-  useEffect(() => {
-    if (!available) return undefined
-    document.body.dataset.dshClaudeContextMeter = ''
-    return () => { delete document.body.dataset.dshClaudeContextMeter }
-  }, [available])
+  // composition it cannot see for this preset; the session mark stands it down,
+  // and this ring takes its seat in the composer row.
+  useClaudeSessionMark(owned)
 
   useEffect(() => {
     if (!open) return undefined
