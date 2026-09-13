@@ -265,4 +265,29 @@ describe('Claude SDK message normalization', () => {
     }))
     expect(blocked).toMatchObject([{ kind: 'status', title: 'Claude rate limit is blocking requests' }])
   })
+
+  it('reads a retry as a wait the user can understand', () => {
+    const retry = { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, retry_delay_ms: 4_800, error_status: 429, error: 'rate_limit_error' }
+    expect(normalizeSdkMessage(sdk(retry))).toEqual([{
+      kind: 'warning',
+      title: 'Claude Code is retrying (2/5)',
+      summary: 'HTTP 429 · rate_limit_error · retrying in 5s',
+      detail: retry,
+    }])
+    // A CLI that names neither count still says what it is doing.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'api_retry' })))
+      .toMatchObject([{ kind: 'warning', title: 'Claude Code is retrying' }])
+  })
+
+  it('draws a hook that failed and files a successful one as status', () => {
+    const failed = { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'format', hook_event: 'PostToolUse', output: 'prettier: command not found', exit_code: 127 }
+    expect(normalizeSdkMessage(sdk(failed))).toEqual([{
+      kind: 'warning',
+      title: 'Claude Code hook format',
+      summary: 'PostToolUse exited 127',
+      detail: 'prettier: command not found',
+    }])
+    const passed = { type: 'system', subtype: 'hook_response', hook_id: 'h2', hook_name: 'format', hook_event: 'PostToolUse', output: 'ok', exit_code: 0 }
+    expect(normalizeSdkMessage(sdk(passed))).toEqual([{ kind: 'status', title: 'Claude Code hook response', detail: passed }])
+  })
 })

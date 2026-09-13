@@ -2162,7 +2162,12 @@ describe('Claude supervisor', () => {
 
     await expect(projection(runtime)).resolves.toMatchObject({
       activities: expect.arrayContaining([
-        expect.objectContaining({ kind: 'warning', title: 'Claude API retry', phase: 'completed' }),
+        expect.objectContaining({
+          kind: 'warning',
+          title: 'Claude Code is retrying (1/10)',
+          summary: 'HTTP 529 · overloaded_error · retrying in 1s',
+          phase: 'completed',
+        }),
       ]),
     })
     await runtime.dispose()

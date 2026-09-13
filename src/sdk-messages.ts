@@ -323,7 +323,27 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
     }]
   }
   if (subtype === 'api_retry') {
-    return [{ kind: 'warning', title: 'Claude API retry', detail: message }]
+    // A retry is the one wait the user should not have to guess at: the CLI
+    // knows the attempt, the reason and the delay, and the row says all three
+    // instead of making the reader open a JSON blob.
+    const attempt = finiteNumber(message.attempt)
+    const maxRetries = finiteNumber(message.max_retries)
+    const delayMs = finiteNumber(message.retry_delay_ms)
+    const errorStatus = finiteNumber(message.error_status)
+    const error = string(message.error)
+    const summary = [
+      errorStatus === undefined ? undefined : `HTTP ${errorStatus}`,
+      error,
+      delayMs === undefined ? undefined : `retrying in ${Math.max(1, Math.round(delayMs / 1_000))}s`,
+    ].filter((part): part is string => part !== undefined && part.length > 0).join(' · ')
+    return [{
+      kind: 'warning',
+      title: attempt === undefined || maxRetries === undefined
+        ? 'Claude Code is retrying'
+        : `Claude Code is retrying (${attempt}/${maxRetries})`,
+      ...(summary.length === 0 ? {} : { summary }),
+      detail: message,
+    }]
   }
   if (subtype === 'compact_boundary') {
     // `/compact` runs entirely inside the CLI: no assistant turn, and the
@@ -357,6 +377,20 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
     // one step can produce tens of thousands of durable rows — the transcript
     // renders none of them, and each one costs a full sidecar rewrite.
     return [{ kind: 'progress', subtype }]
+  }
+  if (subtype === 'hook_response' && finiteNumber(message.exit_code) !== undefined && message.exit_code !== 0) {
+    // A hook that fails can block or bend the turn, so it is not lifecycle
+    // trivia: it lands as a row the transcript draws. Successful hooks stay
+    // where they belong — out of the timeline.
+    const name = string(message.hook_name)
+    const event = string(message.hook_event)
+    const output = string(message.output)
+    return [{
+      kind: 'warning',
+      title: `Claude Code hook ${name ?? 'failed'}`,
+      ...(event === undefined ? {} : { summary: `${event} exited ${String(message.exit_code)}` }),
+      ...(output === undefined || output.length === 0 ? {} : { detail: output }),
+    }]
   }
   if (subtype?.startsWith('hook_') === true || subtype === 'plugin_install') {
     return [{ kind: 'status', title: claudeStatusTitle(subtype), detail: message }]
