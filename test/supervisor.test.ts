@@ -2012,6 +2012,57 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('narrates only what the reader steered, not the CLI\'s own sends', async () => {
+    // The CLI books its internal sends — the background-task report, the
+    // prompt that opened the turn — under the same frame as a steered message.
+    // A row for those would be the transcript talking to itself.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const collected = collect(output)
+    const query = transport.queries[0]!
+    const reader = query.input[Symbol.asyncIterator]()
+    const opening = (await reader.next()).value!
+    query.push(init())
+    query.push({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'task-1',
+      description: 'Deploy',
+      task_type: 'local_bash',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'task-1', task_type: 'local_bash', description: 'Deploy' }],
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push(result('deploying in the background'))
+    // The turn parks waiting for the task, then asks Claude for a report under
+    // a prompt uuid of its own.
+    await vi.waitFor(() => expect(runtime.snapshots()[0]?.state).toBe('running'))
+    query.push({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'task-1',
+      status: 'completed',
+      summary: 'deployed',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    await vi.waitFor(async () => {
+      await expect(projection(runtime)).resolves.toMatchObject({ tasks: { tasks: [{ taskId: 'task-1', status: 'completed' }] } })
+    })
+    const report = (await reader.next()).value!
+    query.push({ type: 'command_lifecycle', command_uuid: opening.uuid, state: 'completed' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: report.uuid, state: 'queued' } as SDKMessage)
+    query.push(result('report done'))
+    await collected
+    expect((await projection(runtime)).activities.filter(activity => activity.commandUuid !== undefined)).toEqual([])
+    await runtime.dispose()
+  })
+
   it('records a queued message the CLI dropped as a failure', async () => {
     const transport = factory()
     const owner = fakeAgent()

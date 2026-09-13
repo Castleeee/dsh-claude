@@ -247,6 +247,10 @@ interface ActiveTurn {
    *  message delivered into it while it ran. A result naming one of these is
    *  this turn's own; anything else is stale or a protocol violation. */
   ownedPromptUuids: Set<string>
+  /** The subset of {@link ownedPromptUuids} that a *user* steered in. The CLI
+   *  books its own internal sends (a background-task report, for one) the same
+   *  way, and only a steered message is news to the reader. */
+  steeredPromptUuids: Set<string>
   phase: 'primary' | 'waiting-tasks' | 'follow-up'
   sawActivity: boolean
   sawTextDelta: boolean
@@ -591,6 +595,7 @@ export class ClaudeSupervisor {
     if (entry.active !== active || active.aborted) return 'unavailable'
     const uuid = randomUUID()
     active.ownedPromptUuids.add(uuid)
+    active.steeredPromptUuids.add(uuid)
     entry.input.push(sdkUserMessage(prompt, uuid))
     return 'delivered'
   }
@@ -884,6 +889,7 @@ export class ClaudeSupervisor {
       aborted: false,
       deniedToolUseIds: new Set(),
       openCalls: new Map(),
+      steeredPromptUuids: new Set(),
       live: undefined,
       liveAt: 0,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
@@ -1536,14 +1542,12 @@ export class ClaudeSupervisor {
         return
       }
       case 'command-lifecycle': {
-        // The prompt that opened this turn IS this turn: its queue → run → done
-        // progress is already drawn as the turn's own rows. A prompt that
-        // arrived while the turn was running has no other evidence anywhere,
-        // and this frame is what tells its sender the CLI heard it. Nothing
-        // else is narrated here: the CLI books its own internal commands the
-        // same way, and those are not the reader's messages.
-        if (message.commandUuid === active.promptUuid) return
-        if (!active.ownedPromptUuids.has(message.commandUuid)) return
+        // The prompt that opened this turn IS this turn, and the CLI books its
+        // own internal sends (a background-task report) the same way; neither
+        // is news. A message the reader steered in while the turn ran has no
+        // other evidence anywhere, and this frame is what tells its sender the
+        // CLI heard it.
+        if (!active.steeredPromptUuids.has(message.commandUuid)) return
         const cancelled = message.state === 'cancelled'
         const settled = message.state === 'completed' || cancelled
         await this.#appendActivity(active, {
