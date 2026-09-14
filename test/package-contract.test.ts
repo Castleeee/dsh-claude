@@ -52,22 +52,21 @@ describe('published package contract', () => {
     expect(packageJson.peerDependencies['@deepseek-ai/dsh-llm']).toBe('>=0.1.5-rc.1')
     expect(packageJson.peerDependencies['@deepseek-ai/dsh-session']).toBe('>=0.1.5-rc.1')
     expect(dshDevelopmentVersions.length).toBeGreaterThan(0)
-    // The Desktop 2.0.7 graph is 0.1.5-rc.1 except for the two packages that
-    // never got that release; the Host ships the same pair, so a stray third
-    // version is the drift this guard is here to catch.
-    expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.1.5-rc.1', '0.1.1-rc.2']))
+    // Desktop 2.0.10 uses 0.1.5-rc.2. Retain the two legacy development
+    // packages on their published line; the runtime uses split controllers.
+    expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.1.5-rc.2', '0.1.1-rc.2']))
     expect(Object.entries(packageJson.devDependencies)
       .filter(([, version]) => version === '0.1.1-rc.2')
       .map(([name]) => name)
       .sort()).toEqual(['@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-host-apiproxy'])
-    expect(workspace).toContain("'@deepseek-ai/dsh-*': 0.1.5-rc.1")
+    expect(workspace).toContain("'@deepseek-ai/dsh-*': 0.1.5-rc.2")
     expect(host).toContain("'attachments'")
     expect(host).toContain('ctx.attachments')
   })
 
   it('documents the DSH package line the plugin is actually built on', async () => {
     const readme = await readFile(join(root, 'README.md'), 'utf8')
-    expect(readme).toContain('developed against the DSH `0.1.5-rc.1` package line')
+    expect(readme).toContain('developed against the DSH `0.1.5-rc.2` package line')
     expect(readme).not.toContain('developed against the DSH `0.1.1-rc.2` package line')
     expect(readme).toContain('0.1.36')
   })

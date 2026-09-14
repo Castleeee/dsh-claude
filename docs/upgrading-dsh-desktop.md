@@ -2,6 +2,42 @@
 
 What to do when the Host moves under this package.
 
+## Current baseline: Desktop 2.0.10 / Host 0.1.5-rc.2
+
+On the audited Windows installation, the Host packages are unpacked at
+`E:\DSH Desktop\resources\app\node_modules\@deepseek-ai\`.
+Check `resources/app/` first, then `resources/app.asar.unpacked/`; extract
+`resources/app.asar` only when neither contains the Host packages. The paths
+in the historical sections below describe those releases, not a fixed layout.
+
+The development graph now targets `0.1.5-rc.2`. Keep `dsh-client-runtime` and
+`dsh-host-apiproxy` on their legacy `0.1.1-rc.2` development versions. The
+plugin's runtime peer floor remains `0.1.5-rc.1`: this upgrade adds no required
+Host API. Do not raise that floor merely to match the development graph.
+
+The rc.2 audit found no incompatible changes in the plugin's imported APIs,
+conversation definitions, or nine registered Slot kinds. After normalizing
+CSS module hashes, the visible changes were file-icon artwork and a 4px
+turn-tail action margin. Preset discovery now supports the Desktop resolver;
+the settings package adds legacy compatibility exports.
+
+The npm rc.2 packages are not byte-identical to this Desktop build: after
+normalizing CSS hashes and build paths, 141 of 143 compared runtime JS files
+match. Desktop additionally patches `dsh-agent-presets` discovery and
+`dsh-settings` compatibility exports. Continue auditing the installed Host;
+matching version numbers alone are not sufficient.
+
+The Host's Windows runner now sets `ELECTRON_RUN_AS_NODE` in its own bootstrap
+environment. Keep `src/windows-job-runner.ts` while supporting rc.1: the wrapper
+is redundant on this rc.2 Host but still protects older Desktop installations.
+The Host sets its flag inside the runner environment builder, so the wrapper
+does not necessarily become a no-op merely because the Host contains the fix.
+
+For a linked, running profile, validate dependency changes and run `pnpm check`
+in a separate source copy first. Do not rebuild the live checkout during a
+turn. Source comparison and clean diagnostics do not replace the manual smoke
+scenarios below; record those separately when actually exercised.
+
 ## Why this needs a runbook
 
 The Desktop build ships **no type declarations**, and several of its client
