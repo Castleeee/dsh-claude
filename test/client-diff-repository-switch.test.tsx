@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createRoot, type Root } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act, Simulate } from 'react-dom/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ClaudeDiffPanel } from '../src/client/ClaudeDiffPanel.tsx'
 import { EMPTY_CLAUDE_PROJECTION, type ClaudeClientProjection } from '../src/client/projection.ts'
@@ -298,6 +298,69 @@ describe('Claude repository bar with linked checkouts', () => {
     mounted = { root, container }
     act(() => { root.render(<LinkedRepositoryBar sessionId="session-1" repository={merged} running={false} t={t} openDiff={vi.fn()} report={vi.fn()} />) })
     expect([...container.querySelectorAll('button')].some(item => item.textContent === en.cleanupButton)).toBe(true)
+  })
+})
+
+describe('commit action dialogs', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+  it('keeps a manually written message when the suggestion arrives later', async () => {
+    const api = await import('../src/client/repository-action-api.ts')
+    vi.spyOn(api, 'loadRepositoryActionPreview').mockResolvedValue({
+      root: '/a', branch: 'feature', head: 'h', fingerprint: 'f', files: [], patch: '', truncated: false,
+      hasStaged: true, hasUnstaged: false, hasUntracked: false, unpushedCommits: [], unpushedTruncated: false,
+    })
+    let finish!: (message: string) => void
+    vi.spyOn(api, 'generateCommitMessage').mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const container = mount({ ...EMPTY_CLAUDE_PROJECTION, owned: true, repository: { ...own, dirty: true } })
+    await act(async () => { [...container.querySelectorAll('button')].find(button => button.textContent === en.diffCommit)!.click() })
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    const input = dialog.querySelector('textarea')!
+    const submit = [...dialog.querySelectorAll('button')].find(button => button.textContent === en.diffCommit)!
+    expect(submit.disabled).toBe(true)
+    act(() => { input.value = 'My own summary'; Simulate.change(input) })
+    expect(submit.disabled).toBe(false)
+    await act(async () => { finish('Generated summary') })
+    expect(input.value).toBe('My own summary')
+    expect(dialog.querySelector('[role="status"]')).toBeNull()
+  })
+  it.each(['commit', 'commit-push', 'push', 'create-pr'] as const)('previews and submits %s with an explicit action label', async action => {
+    const api = await import('../src/client/repository-action-api.ts')
+    const { actionLabel } = await import('../src/client/ClaudeDiffPanel.tsx')
+    vi.spyOn(api, 'loadRepositoryActionPreview').mockResolvedValue({
+      root: '/a', branch: 'feature', upstream: 'origin/feature', head: 'h', fingerprint: 'f',
+      files: [{ path: 'src/own.ts', staged: true, unstaged: false, untracked: false }], patch: '', truncated: false,
+      hasStaged: true, hasUnstaged: false, hasUntracked: false,
+      unpushedCommits: [{ hash: '1234567890', subject: 'Improve commit dialogs' }], unpushedTruncated: false,
+    })
+    const generate = vi.spyOn(api, 'generateCommitMessage').mockResolvedValue('Improve commit dialogs')
+    vi.spyOn(api, 'generatePullRequestText').mockResolvedValue({ title: 'Improve dialogs', body: '## Summary\nClearer Git actions' })
+    const execute = vi.spyOn(api, 'executeRepositoryAction').mockRejectedValue(new api.RepositoryActionClientError('Push failed', undefined, '1234567890'))
+    const container = mount({ ...EMPTY_CLAUDE_PROJECTION, owned: true, repository: { ...own, dirty: true, ahead: 1 } })
+    if (action === 'commit') {
+      await act(async () => { [...container.querySelectorAll('button')].find(button => button.textContent === en.diffCommit)!.click() })
+    } else {
+      act(() => { container.querySelector<HTMLButtonElement>(`[aria-label="${en.diffCommitMenu}"]`)!.click() })
+      await act(async () => { [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.replace(/[….]+$/u, '') === actionLabel(action, t))!.click() })
+    }
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(dialog.textContent).toContain('feature')
+    const submit = [...dialog.querySelectorAll('button')].find(button => button.textContent === actionLabel(action, t))!
+    expect(submit.disabled).toBe(false)
+    if (action === 'push') {
+      expect(dialog.querySelector('textarea')).toBeNull()
+      expect(dialog.textContent).toContain('12345678')
+      expect(dialog.textContent).toContain('origin/feature')
+      expect(generate).not.toHaveBeenCalled()
+    } else {
+      expect(dialog.textContent).toContain('src/own.ts')
+      expect(dialog.querySelector('input[type="checkbox"]')).toHaveProperty('disabled', true)
+    }
+    await act(async () => { submit.click() })
+    expect(execute).toHaveBeenCalledWith('session-1', expect.objectContaining({ action, fingerprint: 'f', message: action === 'push' ? '' : 'Improve commit dialogs', includeUnstaged: false }), undefined)
+    if (action === 'create-pr') expect(execute.mock.calls[0]?.[1]).toMatchObject({ prTitle: 'Improve dialogs', prBody: '## Summary\nClearer Git actions', draft: true })
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('Push failed')
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('12345678')
+    vi.restoreAllMocks()
   })
 })
 

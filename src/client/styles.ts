@@ -3465,6 +3465,63 @@ export const diffModalCss = `
   outline: none;
   box-shadow: inset 0 0 0 1px var(--dsw-static-blue-450);
 }
+.dshClaudeCommitDialog {
+  gap: 0;
+  padding: 0;
+  width: min(880px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.dshClaudeCommitContent { padding: 24px; box-sizing: border-box; }
+.dshClaudeCommitContent > div:first-child { padding: 0 0 16px; }
+.dshClaudeCommitContent > div:last-child:not(:first-child) { padding: 0; margin-top: 0; }
+.dshClaudeCommitContent h2 { font-size: 19px; line-height: 28px; letter-spacing: -.3px; }
+.dshClaudeCommitContext {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.dshClaudeCommitContext strong { color: var(--dsw-alias-label-primary); margin-right: 4px; }
+.dshClaudeCommitBranch {
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-1);
+  font-family: ui-monospace, monospace;
+}
+.dshClaudeCommitGrid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 24px; }
+.dshClaudeCommitSection, .dshClaudeCommitEditor { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.dshClaudeCommitSection h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.dshClaudeCommitChanges { padding-right: 24px; border-right: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeCommitFiles { max-height: 320px; overflow-y: auto; min-width: 0; }
+.dshClaudeCommitFile { display: flex; align-items: center; gap: 10px; padding: 11px 0; font-size: 12px; line-height: 18px; }
+.dshClaudeCommitFile + .dshClaudeCommitFile { border-top: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeCommitPath { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dshClaudeCommitState { flex: none; max-width: 45%; padding: 2px 6px; border-radius: 4px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 16px; }
+.dshClaudeCommitState[data-staged='true'] { color: var(--dsw-static-green-450, var(--dsw-alias-label-primary)); }
+.dshClaudeCommitHash { flex: none; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.dshClaudeCommitEditor textarea, .dshClaudeCommitEditor input { border-radius: 8px; }
+.dshClaudeCommitEditor textarea { width: 100%; box-sizing: border-box; }
+.dshClaudeCommitHint { margin: -6px 0 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 18px; }
+.dshClaudeCommitProgress { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+.dshClaudeCommitDialog > div:last-child:not(.dshClaudeCommitContent) { padding: 16px 24px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeCommitDialog button:focus-visible { outline: 2px solid var(--dsw-static-blue-450); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .dshClaudeCommitContent { padding: 18px; }
+  .dshClaudeCommitGrid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .dshClaudeCommitChanges { padding: 0 0 18px; border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+  .dshClaudeCommitFiles { max-height: 180px; }
+  .dshClaudeCommitDialog > div:last-child:not(.dshClaudeCommitContent) { padding: 14px 18px; }
+}
 `
 
 export const diffModalBody: CSSProperties = {
