@@ -228,8 +228,8 @@ export function ClaudeRewind({ t, currentSessionId, subscribeSessions, chatOf, p
       })}
       {target === undefined ? null : <style data-dsh-claude-rewind-modal-styles>{styles.diffModalCss}</style>}
       <Modal
-        className="dshClaudeRepositoryActionModal"
-        contentClassName="dshClaudeRepositoryActionModalContent"
+        className="dshClaudeRepositoryActionModal dshClaudeUtilityDialog"
+        contentClassName="dshClaudeRepositoryActionModalContent dshClaudeUtilityContent"
         open={target !== undefined}
         onClose={close}
         title={t('rewindTitle')}
@@ -244,7 +244,7 @@ export function ClaudeRewind({ t, currentSessionId, subscribeSessions, chatOf, p
       >
         {target === undefined ? null : <div style={styles.diffModalBody}>
           {target.text === '' ? null : <p style={styles.rewindModalMessage}>{target.text.slice(0, 2_000)}</p>}
-          <label style={styles.diffModalCheckbox}>
+          <label className="dshClaudeUtilityOption" style={styles.diffModalCheckbox}>
             <input type="checkbox" checked={restoreFiles} disabled={submitting} onChange={event => { setRestoreFiles(event.currentTarget.checked) }} />
             {t('rewindRestoreFiles')}
           </label>
