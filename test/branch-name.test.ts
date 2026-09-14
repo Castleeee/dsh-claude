@@ -51,11 +51,11 @@ describe('summarizeBranchSlug', () => {
     }
     await expect(summarizeBranchSlug('/opt/claude', '给 worktree 分支名换成需求摘要', factory)).resolves.toBe('worktree-branch-naming')
     expect(params?.prompt).toContain('给 worktree 分支名换成需求摘要')
-    // A project CLAUDE.md ("reply in the user's language") would ruin the slug.
+    // Let the CLI resolve authentication from the same sources as conversation turns.
     expect(params?.options).toMatchObject({
       model: 'haiku',
       allowedTools: [],
-      settingSources: [],
+      settingSources: ['user', 'project', 'local'],
       maxTurns: 1,
       pathToClaudeCodeExecutable: '/opt/claude',
     })
@@ -65,6 +65,13 @@ describe('summarizeBranchSlug', () => {
     const factory = vi.fn((_value: QueryParams): Query => fakeQuery(success('never-asked')))
     await expect(summarizeBranchSlug('/opt/claude', '   ', factory)).resolves.toBeUndefined()
     expect(factory).not.toHaveBeenCalled()
+  })
+
+  it('falls back for an auth error carried by a success result', async () => {
+    await expect(summarizeBranchSlug('', 'ship it', () => fakeQuery({
+      ...success('Not logged in · Please run /login'),
+      is_error: true,
+    }))).resolves.toBeUndefined()
   })
 
   it('falls back on an unusable reply, a failed turn, and a thrown query', async () => {

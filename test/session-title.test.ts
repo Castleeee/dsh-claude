@@ -38,12 +38,11 @@ describe('summarizeSessionTitle', () => {
     await expect(summarizeSessionTitle('/opt/claude', { system: SYSTEM, input: INPUT }, factory))
       .resolves.toBe('拆分 PSOS-5714 前后端工单')
     expect(params?.prompt).toBe(`${SYSTEM}\n\n${INPUT}`)
-    // A project CLAUDE.md aimed at the coding session would answer the wrong
-    // question, and the title turn must not touch tools or the transcript.
+    // Let the CLI resolve authentication from the same sources as conversation turns.
     expect(params?.options).toMatchObject({
       model: 'haiku',
       allowedTools: [],
-      settingSources: [],
+      settingSources: ['user', 'project', 'local'],
       maxTurns: 1,
       pathToClaudeCodeExecutable: '/opt/claude',
     })
@@ -56,6 +55,13 @@ describe('summarizeSessionTitle', () => {
       .rejects.toThrow(/produced no title/)
     await expect(summarizeSessionTitle('', { input: '   ' }, () => fakeQuery(success('unused'))))
       .rejects.toThrow(/carried no text/)
+  })
+
+  it('rejects an auth error carried by a success result so DSH keeps its fallback', async () => {
+    await expect(summarizeSessionTitle('', { input: INPUT }, () => fakeQuery({
+      ...success('Not logged in · Please run /login'),
+      is_error: true,
+    }))).rejects.toThrow(/produced no title/)
   })
 
   it('aborts the throwaway turn when the title service supersedes it', async () => {

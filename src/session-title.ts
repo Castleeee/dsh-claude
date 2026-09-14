@@ -77,16 +77,14 @@ export async function summarizeSessionTitle(
         abortController: lifetime,
         model: SESSION_TITLE_MODEL,
         allowedTools: [],
-        // Isolated from filesystem settings on purpose: a CLAUDE.md instruction
-        // aimed at the coding session ("always answer in English", "start every
-        // reply with a checklist") would be answering the wrong question here.
-        settingSources: [],
+        // Match conversation turns so the CLI can resolve settings-based authentication.
+        settingSources: ['user', 'project', 'local'],
         maxTurns: 1,
         ...(executablePath.length === 0 ? {} : { pathToClaudeCodeExecutable: executablePath }),
       },
     })
     for await (const message of query) {
-      if (message.type !== 'result' || message.subtype !== 'success') continue
+      if (message.type !== 'result' || message.subtype !== 'success' || message.is_error === true) continue
       const title = sessionTitleLine(message.result)
       if (title.length > 0) return title
       break

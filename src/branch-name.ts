@@ -62,9 +62,8 @@ export function uniqueBranchName(candidate: string, taken: readonly string[]): s
 /** Compress a composer draft into a branch slug with a throwaway Claude turn.
  *
  *  Deliberately NOT routed through the supervisor, for the same reasons as the
- *  plan-usage probe: there is no session to borrow yet. The turn is isolated
- *  from filesystem settings as well, because a CLAUDE.md instruction ("always
- *  reply in the user's language") turns the answer into an unusable slug. */
+ *  plan-usage probe: there is no session to borrow yet. Settings sources match
+ *  conversation turns so the CLI can resolve settings-based authentication. */
 export async function summarizeBranchSlug(
   executablePath: string,
   intent: string,
@@ -83,13 +82,13 @@ export async function summarizeBranchSlug(
         abortController: lifetime,
         model: BRANCH_SUMMARY_MODEL,
         allowedTools: [],
-        settingSources: [],
+        settingSources: ['user', 'project', 'local'],
         maxTurns: 1,
         ...(executablePath.length === 0 ? {} : { pathToClaudeCodeExecutable: executablePath }),
       },
     })
     for await (const message of query) {
-      if (message.type === 'result' && message.subtype === 'success') return branchSlug(message.result)
+      if (message.type === 'result' && message.subtype === 'success' && message.is_error !== true) return branchSlug(message.result)
     }
     return undefined
   } catch {
