@@ -1,22 +1,28 @@
 # dsh-claude Product and Architecture Spec
 
-Status: implemented baseline with sidecar persistence amendment
-Date: 2026-08-15
+Status: current architecture and behavior reference
+Originally created: 2026-08-15
+Reviewed against code: 2026-09-14 (plugin 0.1.51, SDK 0.3.247, DSH development graph 0.1.5-rc.2)
+
+The dated filename is retained for existing links. Dated plans and evidence are
+historical, not additional current requirements. This describes implemented
+behavior; the verification section is a checklist, not a claim that every
+scenario has passed on every platform. See [the index](../INDEX.md).
 
 ## 1. Product / Requirement Baseline
 
 ### 1.1 Problem
 
-DeepSeek Harness (DSH) can run its native agent loop and can expose external coding agents as delegated subagents, but it does not provide a first-class main-conversation experience backed by the user's already-installed local Claude Code CLI. The user wants to stay in the existing DSH Web profile, choose Claude Code for a new conversation, and retain Claude Code's own agent loop, tools, CLAUDE.md discovery, Skills, Hooks, Plugins, MCP configuration, authentication, and session behavior.
+DeepSeek Harness (DSH) can run its native agent loop and can expose external coding agents as delegated subagents, but it does not provide a first-class main-conversation experience backed by the user's already-installed local Claude Code CLI. The user wants to stay in the existing DSH profile, choose Claude Code for a new conversation, and retain Claude Code's own agent loop, tools, CLAUDE.md discovery, Skills, Hooks, Plugins, MCP configuration, authentication, and session behavior.
 
 ### 1.2 Goal
 
-Ship an out-of-tree DSH bundle named `dsh-claude` that adds a `Claude Code CLI` Agent Preset to the current Web profile. A session using that preset routes each outer DSH model step into a complete Claude Code turn driven by the user's local CLI. DSH remains the conversation UI, durable presentation mirror, permission UI, process owner, and cancellation surface.
+Ship an out-of-tree DSH bundle named `dsh-claude` that adds a `Claude Code CLI` Agent Preset to the current DSH profile. A session using that preset routes each outer DSH model step into a complete Claude Code turn driven by the user's local CLI. DSH remains the conversation UI, durable presentation mirror, permission UI, process owner, and cancellation surface.
 
 ### 1.3 Required experience
 
-1. Install the bundle into the existing `web` profile.
-2. Create a blank DSH conversation and select the `Claude Code CLI` preset.
+1. Install the bundle into the active DSH profile (`desktop` for the audited Desktop installation).
+2. Create a blank DSH conversation and select the `Claude` preset.
 3. Send ordinary messages through the DSH composer.
 4. Claude Code owns its internal agent loop and built-in tools.
 5. DSH streams final user-visible text and renders complete Claude activity cards for thinking summaries, tool calls/results, subagents, permissions, usage, status, and failures.
@@ -33,22 +39,21 @@ Ship an out-of-tree DSH bundle named `dsh-claude` that adds a `Claude Code CLI` 
 - Do not expose DSH tools to Claude as a second agent loop.
 - Do not represent Claude-owned tool calls as DSH-owned tool execution.
 - Do not automatically replay a prompt whose side-effect outcome is unknown.
-- The first supported and verified platform is macOS.
+- macOS was the initial validation platform. Current code also includes Windows executable and runner compatibility; platform-specific verification must be recorded separately.
 
-### 1.5 Non-goals for v0.1
+### 1.5 Current non-goals
 
 - Managing Claude login or credentials inside DSH.
 - Switching a non-empty conversation between native DSH and Claude Code presets.
-- Windows or Linux verification.
 - Plugin-owned background-agent execution. Claude Code owns background execution; when tasks outlive the primary result, the plugin keeps that DSH turn open and asks the same Claude session for one final report after all tasks settle.
-- Publishing to npm before local installation and compatibility validation pass.
+- Treating an npm release or a successful build as proof of live Host compatibility.
 - Modifying DeepSeek Harness core APIs.
 
 ## 2. Architecture / Runtime Boundary Baseline
 
 ### 2.1 Integration shape
 
-The plugin does not replace the process-global DSH `AgentFactory`. The Web profile keeps the native `dsh-agent-loop`. A plugin-provided Agent Preset contributes an `agent/request` waterfall listener that replaces the request route with the plugin's `claude` provider. The provider's adapter turns one DSH model request into one complete Claude Code agent turn and emits only final assistant content back through the DSH LLM stream.
+The plugin does not replace the process-global DSH `AgentFactory`. The active profile keeps the native `dsh-agent-loop`. A plugin-provided Agent Preset contributes an `agent/request` waterfall listener that replaces the request route with the plugin's `claude` provider. The provider's adapter turns one DSH model request into one complete Claude Code agent turn and maps output according to the per-turn renderer described in section 3.4.
 
 This is an agent bridge at the LLM seam, not a claim that Claude Code is a stateless LLM provider.
 
@@ -69,10 +74,10 @@ This is an agent bridge at the LLM seam, not a claim that Claude Code is a state
 
 Use `@anthropic-ai/claude-agent-sdk` only as the supported typed protocol/process adapter for the local CLI. Configure `pathToClaudeCodeExecutable` with the resolved absolute user executable and set `spawnClaudeCodeProcess` to a wrapper backed by `ctx.subprocess`. The SDK must not choose its optional bundled binary and must not authenticate independently.
 
-Required SDK options include:
+The main conversation Query options include:
 
 - `pathToClaudeCodeExecutable`: resolved local CLI path
-- `systemPrompt: { type: 'preset', preset: 'claude_code' }`
+- `systemPrompt: { type: 'preset', preset: 'claude_code', append: PLAN_MODE_HANDOFF_PROMPT }`
 - `settingSources: ['user', 'project', 'local']`
 - `includePartialMessages: true`
 - `permissionMode`: mapped from the session's durable DSH sandbox mode (`read-only` → `plan`, `workspace-write` → `acceptEdits`, `danger-full-access` → `bypassPermissions`)
@@ -83,7 +88,7 @@ Required SDK options include:
 - explicit model only when the selected alias is not `default`
 - `spawnClaudeCodeProcess`: DSH-managed process adapter
 
-The version initially pinned for development is `@anthropic-ai/claude-agent-sdk@0.3.233`, aligned with the detected local Claude Code `2.1.233`. Runtime compatibility is feature-detected and diagnosed rather than inferred only from a version string.
+The pinned SDK is `@anthropic-ai/claude-agent-sdk@0.3.247`; the executable is resolved from the local installation. Auxiliary query helpers have their own options and lifetime; the supervisor options above do not apply wholesale to them. Runtime compatibility is feature-detected and diagnosed rather than inferred only from a version string.
 
 ### 2.4 Sandbox boundary amendment
 
@@ -99,7 +104,7 @@ The bundle adds:
 
 - one host adapter route: `claude`
 - one preset-scoped route plugin that overrides `agent/request` to `{ provider: 'claude', model: <alias> }`
-- one user-visible preset: `claude`, shipped inside the package and registered as a read-only system preset root so dependency removal removes the complete integration
+- one user-visible preset: `claude`, shipped inside the package plus a guarded compatibility copy under `$DSH_HOME/.agent-presets/claude`; activation preserves user edits and uses the profile package source. Dependency removal alone cannot run preset cleanup; follow `INSTALL.md`
 
 The preset contains no DSH model-facing filesystem, shell, skill, web, goal, todo, workflow, or subagent tools. Claude Code owns those capabilities. It may include only the route plugin and a minimal persona/presentation contribution needed by DSH.
 
@@ -115,16 +120,14 @@ Resolution order:
 4. macOS fallback `/opt/homebrew/bin/claude`
 5. macOS fallback `/usr/local/bin/claude`
 
-Doctor reports only:
+The executable Doctor reports:
 
 - resolved path
 - CLI version
-- SDK/CLI compatibility feature checks
 - authentication status category when the CLI exposes it safely
 - process handshake status
-- current configured idle/concurrency limits
 
-Doctor never returns token values, environment secrets, keychain data, or complete settings files.
+Doctor never returns token values, environment secrets, keychain data, or complete settings files. The Host route additionally reports coarse supervisor and command-bridge diagnostics. The standalone CLI leaves handshake `not-run` and its exit code checks version detection, not successful authentication. Windows Host discovery resolves supported npm shims to a native executable; standalone CLI discovery is simpler.
 
 ### 3.2 Process supervisor
 
@@ -155,7 +158,17 @@ DSH image blocks contain immutable attachment references, not paths or URLs. Res
 
 DSH system prompts and tool schemas are not forwarded. Claude Code receives its own `claude_code` system prompt preset and local configuration. Image bytes exist only in the transient SDK input message; they are never written to sidecars, activity records, or logs.
 
-Auxiliary DSH calls (`purpose: 'compaction' | 'session-title'`) are not routed through the Claude preset bridge unless they are explicitly agent-scoped ordinary conversation calls.
+DSH `session-title` requests are handled by `src/session-title.ts` through a
+separate single-turn Haiku query; DSH's title instructions are carried in its
+prompt. `compaction` remains rejected by the adapter because Claude owns its
+context loop. `src/branch-name.ts` similarly summarizes worktree intent in a
+separate query. Both naming helpers use `settingSources: ['user', 'project',
+'local']`, `maxTurns: 1`, and `cwd: process.cwd()`. They inherit settings-based
+authentication and behavior settings without borrowing the main session.
+A success subtype with `is_error: true` is still an error: title generation
+rejects so DSH keeps its fallback, and branch naming returns `undefined` so
+worktree preparation keeps its timestamped fallback. Title and branch budgets
+are 60 seconds and 15 seconds respectively.
 
 ### 3.4 Output mapping
 
@@ -224,6 +237,14 @@ For agents composed with the Claude preset, initialize the owned Query on the fi
 
 The plugin may provide a plugin-owned context refresh command, but must not shadow an existing DSH command. Claude commands that are local-only or produce no assistant text still complete through the ordinary turn boundary without synthesizing model output.
 
+### 3.7 Additional implemented workflows
+
+- `repository-setup.ts`: branch selection, generated branch names, worktree/workspace leases and cleanup. Deleted-workspace reconciliation can force-remove dirty managed worktrees; explicit merged-branch cleanup requires a clean tree and guards unpushed commits.
+- Repository status, action and review routes: Git/PR state, commit/push/merge, base updates, review comments, and auto-fix handoff. These use the managed subprocess runtime and trusted bounded routes.
+- Jira routes: ticket lookup, assignment, and ticket-based worktree/session preparation.
+- Prompt routes: Markdown snippets under `~/.claude/prompts`, naming and draft refinement. Selection questions use a separate read-only query. These are auxiliary helpers, not another main conversation loop.
+- Rewind: transcript anchoring and optional checkout restoration while retaining append-only DSH history. Stop cleanup is serialized with the next same-session turn; do not remove resume state to handle cancellation.
+
 ## 4. Permission Contract
 
 `canUseTool(toolName, input, context)` performs:
@@ -280,7 +301,7 @@ Do not render raw JSON by default. An expand control may show already-redacted d
 
 ### 5.3 Background tasks panel
 
-Register an active-turn chat-node launcher and a completed-turn tail launcher only when that turn owns tasks in the latest sidecar snapshot; do not keep a permanent session-header Tasks control. The active launcher is reactive while the DSH turn remains open, disappears at `turn/end`, and hands off to the completed-turn tail without duplication. Both launchers reflect running, completed, or failed state and open the DSH details column scoped to that origin turn. The panel groups that turn's tasks into Running and Finished sections and shows bounded description, task/agent type, status, duration, tokens, tool-use count, last tool, and summary when supplied.
+Register an active-turn chat-node launcher and a completed-turn tail launcher only when that turn owns tasks in the latest sidecar snapshot; do not keep a permanent session-header Tasks control. The active launcher is reactive while the DSH turn remains open, disappears at `turn/end`, and hands off to the completed-turn tail without duplication. Both launchers reflect running, completed, or failed state and open the tasks tab in the right sidebar scoped to that origin turn. The panel groups that turn's tasks into Running and Finished sections and shows bounded description, task/agent type, status, duration, tokens, tool-use count, last tool, and summary when supplied.
 
 Finished tasks may be collapsed and cleared from the mounted Client view. Clear is deliberately local presentation state: it does not mutate or falsify the canonical sidecar snapshot, and a newly observed settled task remains visible. “View activity” filters only already-redacted sidecar activity by the bounded task id; it never reads Claude transcript paths or exposes the resume identity.
 
@@ -288,14 +309,17 @@ The pinned Agent SDK and DSH public session face expose whole-turn interruption 
 
 ### 5.4 Context meter
 
-Register an additive `conversation.input.right` entry so the meter appears between the model selector and send button without replacing the native composer. Its compact trigger is a circular percentage indicator. Activating it opens a theme-token-based panel showing:
+The sidecar stores aggregate context usage from the SDK, and the session board
+(`ClaudePullRequestsPanel`) displays it. Current client registration does not
+include a standalone `conversation.input.right` context-meter slot. Refresh
+metadata after initialization and turns; unavailable samples must not block
+prompting. Do not expose memory paths, tool identities, or prompt contents.
 
-- used percentage
-- total tokens and context-window maximum
-- a segmented category bar
-- category rows for the aggregate SDK categories
-
-The session-owned sidecar projection supplies the latest context sample, so refresh and Host restart preserve the last known meter. Refresh usage after Query initialization and after each completed Claude turn. While no sample exists, render nothing; metadata or projection failure must not block prompting. The component must not display excluded paths, tool identities, prompt content, or secrets.
+Diff, plan, tasks, and overview are registered through `sidebarRightTabs` and
+`sidebar.right.pane.tab`; `sidebarRight.openTabIn` opens them per session.
+The Host owns fullscreen and close. Composer bars use `conversation.input.dock`,
+and prompt save/refine actions use `conversation.input.left` with standard input
+hooks. Host DOM bridges use local class names and data attributes, not build hashes.
 
 ### 5.5 Settings, Doctor, and updates
 
@@ -308,7 +332,7 @@ Add a settings section with:
 - redacted Doctor output and rerun action
 - npm release discovery and an in-place update action for uniquely identified registry installations
 
-Persist plugin runtime settings through the plugin's own settings namespace if the DSH public settings seam supports out-of-tree schemas. If not, keep runtime configuration in the bundle row; do not invent an unmanaged credentials file. The settings menu may expose selected Claude Code user settings through one extensible global-settings registry and a trusted same-origin API. Every field requires an explicit descriptor, validation, effect scope, and bounded public metadata; the browser must never receive or write arbitrary settings JSON.
+Bundle configuration supplies the executable and default supervisor configuration. `src/global-settings.ts` stores plugin overrides under `$DSH_HOME/plugins/dsh-claude/settings.json`: renderer, prose style, alerts, worktree prefix, maximum processes, and idle timeout. Selected Claude settings such as output style are merged into Claude's own settings file. Do not invent a credentials file. The settings menu may expose selected Claude Code user settings through one extensible global-settings registry and a trusted same-origin API. Every field requires an explicit descriptor, validation, effect scope, and bounded public metadata; the browser must never receive or write arbitrary settings JSON.
 
 The `renderer` field selects the AI output renderer (`plugin` or `native`, see
 3.4). It is stored in the plugin's own settings document, never in
@@ -339,12 +363,12 @@ Plugin updates must install the registry's validated latest version explicitly r
 
 ## 7. Compatibility
 
-- Target installed DSH `0.1.0-rc.5` public package surfaces.
+- Develop against DSH `0.1.5-rc.2` (Desktop 2.0.10); the runtime peer floor remains `0.1.5-rc.1`. The legacy development packages `dsh-client-runtime` and `dsh-host-apiproxy` remain `0.1.1-rc.2`; client registration uses split controllers.
 - Keep peer dependency ranges broad enough for compatible rc updates but test against the installed host.
 - Never import DSH internal source paths or copy `dsh-agent-loop` implementation.
 - Use public agent request waterfall, LLM adapter, subprocess, approval, Web prefix route, per-agent command registry, session provider, client conversation projection, and additive input-slot APIs.
 - Never depend on runtime mutation of DSH's persisted event vocabulary.
-- A DSH upgrade that removes any required public seam must fail at plugin activation with a named compatibility diagnostic.
+- Boot checks report missing declared client services/methods and the scoped composer CSS property. Slot failures are reported separately. These checks do not guarantee that every possible Host incompatibility fails at activation; follow the installed-source audit in `docs/upgrading-dsh-desktop.md`.
 
 ## 8. Verification and Acceptance
 
@@ -363,14 +387,14 @@ Plugin updates must install the registry's validated latest version explicitly r
 - SDK message fixtures for init, partial text, tool use/result, permission, usage, success, failure, and malformed input
 - command catalog projection, aliases, DSH/Client-name collision prefixing, ordinary-message delivery, and absence of Host command lifecycle events
 - context-usage normalization, safe-field sidecar persistence, latest-sample projection, and meter rendering
-- trusted projection route, Client initial load/polling/cleanup/failure degradation, per-step chat-node ordering, active task-node lifecycle, and completed turn-tail handoff
+- trusted projection route, Client initial stream/reconnect/cleanup/failure degradation, per-step chat-node ordering, active task-node lifecycle, and completed turn-tail handoff
 - Desktop cold-load of a newly produced session with no `claude-code/*` events
 - typecheck Host and Client builds
 - bundle build and package contents check
 
 ### 8.2 Local integration
 
-- link-install into the current Web profile
+- link-install into the current DSH profile
 - verify existing native preset session still works
 - create a Claude preset session
 - run text-only, pure-image, interleaved text/image, and multiple-image prompts
@@ -383,8 +407,8 @@ Plugin updates must install the registry's validated latest version explicitly r
 - idle-evict and resume
 - type `/` and verify Claude Skills/Commands are discoverable with DSH collisions prefixed
 - execute one Claude Skill and confirm it runs as an ordinary DSH turn with activity and approval behavior intact, with no command status row under the preceding response
-- verify the context meter beside model selection initializes, updates after a turn, opens its aggregate breakdown, and survives refresh
-- run Doctor with the detected `~/.local/bin/claude` path
+- verify session-board context usage updates after a turn and survives refresh
+- run Doctor with the actual resolved local executable; do not assume a macOS path
 
 ### 8.3 Completion evidence
 
@@ -396,7 +420,7 @@ Future work may:
 
 - replace the LLM-seam bridge with a keyed DSH AgentFactory if DSH adds that public contract
 - add explicit runtime state roots to DSH sandbox policy and enable kernel confinement
-- verify Linux and Windows
-- publish the bundle to npm
+- complete and record platform-specific smoke coverage, including Linux and Windows
+- continue publishing validated releases; the package is already distributed through npm
 
 No compatibility fallback should copy the native DSH agent loop or silently downgrade Claude sessions to the native model route.

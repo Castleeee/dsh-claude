@@ -18,13 +18,13 @@ The plugin never asks for or stores Claude credentials. Authenticate through the
 
 ### Install from npm
 
-Add the published package to the DSH Web profile:
+Add the published package to the profile used by your running DSH instance. The commands below use `desktop`; replace it with `web` only for an existing Web profile. Use the DSH CLI supplied by that installation:
 
 ```sh
-dsh plugin --profile web add @norman-else/dsh-claude
+dsh plugin --profile desktop add @norman-else/dsh-claude
 ```
 
-Wait for the profile rebuild to finish, then restart DSH Desktop if requested. Create a new conversation and select **Claude** from the Agent Preset picker.
+Wait for the profile rebuild to finish, then quit DSH Desktop completely and reopen it. Create a new conversation and select **Claude** from the Agent Preset picker.
 
 ### Install from source
 
@@ -35,16 +35,18 @@ pnpm install
 pnpm check
 ```
 
+For a checkout already linked to a running Desktop, run builds only after its turns have finished: rebuilding can hot-reload the plugin. Use a separate source copy for validation during active work. See [INSTALL.md](INSTALL.md).
+
 Link the checkout to DSH from PowerShell:
 
 ```powershell
-dsh plugin --profile web add "link:$PWD"
+dsh plugin --profile desktop add "link:$($PWD.Path.Replace('\', '/'))"
 ```
 
 Or from macOS/Linux:
 
 ```sh
-dsh plugin --profile web add "link:$(pwd)"
+dsh plugin --profile desktop add "link:$(pwd)"
 ```
 
 ### Remove the plugin
@@ -52,8 +54,8 @@ dsh plugin --profile web add "link:$(pwd)"
 Remove the managed compatibility preset before removing the package:
 
 ```sh
-dsh plugin --profile web exec dsh-claude remove-preset
-dsh plugin --profile web remove @norman-else/dsh-claude
+dsh plugin --profile desktop exec dsh-claude remove-preset
+dsh plugin --profile desktop remove @norman-else/dsh-claude
 ```
 
 DSH does not currently expose a plugin uninstall lifecycle hook. If the package was removed before its managed preset was cleaned up, run the matching installed version directly:
@@ -69,12 +71,12 @@ Preset cleanup removes only installer-managed content and refuses to delete user
 ### 3.1 Conversation
 
 - **Native Claude Code conversations** — Runs Claude Code as the main agent in a normal DSH conversation instead of wrapping it as a tool or secondary chat.
-- **Claude preset and model selection** — Adds a `Claude` Agent Preset and exposes Claude Code's `default`, `opus[1m]`, `fable`, `sonnet`, and `haiku` model choices.
+- **Claude preset and model selection** — Adds a `Claude` Agent Preset and reads Claude Code's model catalog. `default`, `opus[1m]`, `fable`, `sonnet`, and `haiku` are fallback choices when the catalog is unavailable.
 - **Thinking effort** — Maps DSH's per-model reasoning effort onto Claude Code's thinking modes — `off`, `low`, `medium`, `high` (Claude Code's own default), `xhigh`, `max`, and `ultracode` — so the conversation's effort control drives extended thinking directly. Models that do not support a mode downgrade silently inside Claude Code; `ultracode` additionally turns on standing dynamic-workflow orchestration and needs an `xhigh`-capable model.
 - **Local Claude environment compatibility** — Preserves the user's existing Claude Code authentication, settings, `CLAUDE.md`, Skills, Hooks, Plugins, tools, and MCP configuration.
 - **Real-time streaming and conversation continuity** — Streams Claude responses and tool activity into DSH while retaining multi-turn context and persisted Claude session resume.
 - **DSH permissions and questions** — Routes Claude tool permission requests through DSH approvals and Claude clarification prompts through DSH's native question forms.
-- **Plan review** — Under read-only access Claude works in plan mode, and the plan it hands back is read in a plugin-owned panel in the details column, rendered as Markdown under the prose palette chosen in this plugin's settings. The approval itself stays with DSH: its dialog names the decision and points at the panel instead of pasting the plan into a plain-text modal, and it is asked even under Full access — that setting waives actions, not the decision the plan was written to put in front of the user. Full access silences approvals outright (`approval/policy: never`, answered before any surface is shown), so the ask is un-silenced for as long as the plan is open and the session's own policy is put back afterwards. Approving and rejecting are the only answers the dialog has, and neither is "change this", so the panel adds the third: select a passage, write what should change, and send the plan back — the notes reach Claude as the reason it was refused, and the dialog closes itself. A session that proposes more than once keeps every plan: the panel heading becomes a picker listing each with its own decision, and a fresh proposal awaiting approval takes the panel back. The Session header carries a plan toggle, dotted while a plan is still waiting on its decision, and the turn's tool card carries the same plan.
+- **Plan review** — Under read-only access Claude works in plan mode, and the plan it hands back is read in a plugin-owned panel in a right-sidebar tab, rendered as Markdown under the prose palette chosen in this plugin's settings. The approval itself stays with DSH: its dialog names the decision and points at the panel instead of pasting the plan into a plain-text modal, and it is asked even under Full access — that setting waives actions, not the decision the plan was written to put in front of the user. Full access silences approvals outright (`approval/policy: never`, answered before any surface is shown), so the ask is un-silenced for as long as the plan is open and the session's own policy is put back afterwards. Approving and rejecting are the only answers the dialog has, and neither is "change this", so the panel adds the third: select a passage, write what should change, and send the plan back — the notes reach Claude as the reason it was refused, and the dialog closes itself. A session that proposes more than once keeps every plan: the panel heading becomes a picker listing each with its own decision, and a fresh proposal awaiting approval takes the panel back. The Session header carries a plan toggle, dotted while a plan is still waiting on its decision, and the turn's tool card carries the same plan.
 - **Claude command bridge** — Publishes Claude Code's own command catalog into the DSH command palette, retrying with backoff while a fresh CLI finishes loading Skills and Plugins.
 - **Prompt snippets** — Keeps the half-written messages a user retypes every day as ordinary Markdown files in `~/.claude/prompts`, one per file, and offers them as a second `/` group beside the Claude command catalog. Picking one drops its text into the composer instead of sending it, so the draft stays editable — a snippet is a message the user finishes, not a command that runs. A control in the composer's own tool row, beside the attach and access controls, saves the current draft as a new snippet: it offers the draft's opening line as the file name and names the file it wrote. It costs the layout nothing — a docked row would move the composer on every keystroke — and an existing name is never overwritten. The derived name is only the starting point: a Claude Haiku call names the snippet properly and replaces it when it lands, unless the user has already started typing, and a failed or slow suggestion is a non-event because a working name was there from the first frame. That call runs with extended thinking off, which is what keeps it around three seconds rather than ten.
 - **Rewrite a draft with AI** — A second control in the same tool row hands the current draft to Claude Haiku and replaces it with a version an agent can act on without asking follow-up questions, keeping every concrete detail the original carried. `SessionInput.setDraft` merges into the editor's undo history rather than adding a step to it, so Ctrl/Cmd+Z would not bring the original back: the button holds it instead, and offers it back for as long as the rewrite is still on screen unedited. The rewrite is told to leave every reference to a person as written — asked to rewrite "assign it to me", the model otherwise reaches into Claude Code's ambient context and substitutes the operator's real email address. Editing, renaming, and deleting happen in the user's own editor, and a file added there shows up in the menu without a reload.
@@ -83,21 +85,22 @@ Preset cleanup removes only installer-managed content and refuses to delete user
 - **Ask about a selection** — Answers a question about any selected text through a read-only side query limited to `Read`, `Grep`, and `Glob`, reusing the session's model and thinking mode, with the answer copyable or sendable into the main conversation.
 - **Redacted activity timeline** — Displays thinking summaries, tool calls and results, permission events, questions, status changes, usage, errors, and subagent activity without persisting credentials.
 - **Selectable AI output renderer** — Draws Claude's output either with this plugin's own transcript (interleaved prose, grouped tool cards, activity rows) or with DSH's native conversation renderer, where prose arrives as ordinary assistant text blocks, thinking as reasoning blocks, and root Claude tools as native tool cards (terminal, diff, search, read). Chosen in Settings and applied from the next turn; the plugin transcript remains the default, and turns already recorded keep the renderer that drew them.
+- **Automatic session titles and branch names** — Uses separate one-turn Haiku queries to summarize the first message or worktree intent. Both load `user`, `project`, and `local` settings like the main conversation, including settings-based authentication and behavior configuration. An error result keeps DSH's fallback title or the generated timestamped branch name. These queries do not borrow the main conversation process.
 - **Background task tracking** — Shows running and completed Claude subagents or background tasks with task status, recent tools, and expandable activity.
-- **Context usage** — Tracks how much of the context window a session has consumed and surfaces it as a percentage in the conversation and on the session board.
+- **Context usage** — Collects aggregate context-window usage from Claude Code and shows it on the session board. It does not register a separate context-meter slot beside the model selector.
 - **Turn accounting** — Closes each turn the plugin transcript drew with the footer DSH gives only its own messages: tokens, cache hit rate, wall time, time to first token, and cumulative cost. The timings are measured as the turn runs, because activity records carry no clock of their own.
 - **Managed process lifecycle** — Keeps one live Claude process per active session, serializes turns, evicts idle processes, queues user turns FIFO when every process slot is busy, converges safely after the limit is lowered, and handles Stop, cancellation, restart, and process-tree cleanup.
 - **Bilingual interface** — Ships every user-facing string in both English and Chinese.
 
 ### 3.2 Repository, worktrees, and pull requests
 
-- **Repository and worktree preparation** — Lets a user choose a branch before submitting, switch an eligible local branch, or create a dedicated Git worktree and DSH workspace while transferring the current draft and attachments, and removes a worktree's directory automatically once its workspace is deleted and the tree is clean.
+- **Repository and worktree preparation** — Lets a user choose a branch before submitting, switch an eligible local branch, or create a dedicated Git worktree and DSH workspace while transferring the current draft and attachments, and reconciles plugin-managed worktrees after their workspace is deleted. That deletion can remove a dirty worktree with `--force`; commit or preserve needed files before deleting the workspace. The separate merged-branch cleanup action requires a clean tree and checks for unpushed commits.
 - **Branch picker** — Lists the repository's local and remote-tracking branches, filters them as the user types, and refreshes from the remote on demand so a branch created elsewhere becomes selectable without leaving DSH.
 - **Jira-driven sessions** — Connects to Jira Cloud and starts work from a ticket: the branch is named after the ticket key, the composer is seeded with the ticket brief, the ticket is assigned to the user once the worktree exists, and several tickets can be kicked off at once, each in its own worktree session.
 - **Repository and pull request status** — Shows the current repository, branch, worktree state, changed-line counts, unpushed commits, GitHub pull request, checks, review state, merge state, and blocking Claude rate limits near the composer.
 - **Session board** — Summarizes every Claude session in one place with its run state, branch, pull request, context usage, auto-fix state, and whether it is waiting on an approval or an answer.
 - **Session alerts** — Raises a desktop notification when a session the user is not looking at starts waiting on an approval or an answer, or finishes its turn; clicking it brings that session up. The session on screen never raises one, a prompt is announced once, and the whole thing is switched off from Settings.
-- **Branch diff viewer** — Provides an expandable or maximized branch diff with file statistics, expand-all and collapse-all, on-demand unmodified context, and comment-to-comment navigation.
+- **Branch diff viewer** — Provides a branch diff in a right-sidebar tab, with Host-managed fullscreen with file statistics, expand-all and collapse-all, on-demand unmodified context, and comment-to-comment navigation.
 - **Line-level review comments** — Records the user's own line or range comments against the diff and attaches them to the next Claude message.
 - **GitHub review threads** — Reads, replies to, resolves, and unresolves pull request review threads inline, with `@` completion for repository members, bot authors marked as such, and a link back to the thread on GitHub.
 - **Commit, push, merge, and pull request actions** — Supports Commit, Commit & Push, Push, draft pull request creation, and merging a pull request as a merge commit, squash, or rebase, with repository snapshot validation and optional Claude-generated commit messages.
@@ -112,7 +115,7 @@ Preset cleanup removes only installer-managed content and refuses to delete user
 - **Plan usage** — Reports the signed-in subscription's utilization windows — five-hour, weekly across all models, and weekly per model — with reset countdowns, degrading to unavailable rather than failing on API-key, Bedrock, and Vertex sessions.
 - **Bounded requests and a rationed connection pool** — Caps the plugin's share of the browser's per-origin connections so its own panels can never starve each other or the Host, and gives every route a declared time budget — answers from memory, local Git work, and calls that reach the network each get their own — with the client waiting one round trip longer than the server, so a slow operation reports which budget elapsed instead of hanging in the browser's queue.
 - **Plugin updates** — Checks npm for new releases and updates in place, only when the installation is uniquely identified; local development links are never replaced.
-- **Managed preset compatibility** — Installs a guarded Claude preset whose route reuses the active profile package source, preserving discovery on DSH Desktop 2.0.4 without duplicate client-module Loaders or overwriting user changes.
+- **Managed preset compatibility** — Installs a guarded Claude preset whose route reuses the active profile package source, preserving discovery on Desktop versions that do not retain third-party preset roots without duplicate client-module Loaders or overwriting user changes.
 
 ## 4. Contributing
 
@@ -197,3 +200,10 @@ The type is declared through the label and the `Type:` line rather than a title 
 - A failing or unrun `pnpm check`.
 - Anything that logs, persists, or renders credentials, including in tests and fixtures.
 - Version bumps, release script edits, or publish attempts from a contribution branch.
+
+## 5. Documentation
+
+- [Installation and removal](INSTALL.md): profile selection, safe source builds, Doctor, and smoke checks.
+- [Current architecture](docs/aegis/spec/2026-08-15-dsh-claude-spec.md): behavior and ownership boundaries, maintained despite the original filename.
+- [Desktop upgrades](docs/upgrading-dsh-desktop.md): installed-Host audit and verification procedure.
+- [Documentation index](docs/aegis/INDEX.md): distinguishes current guidance from historical plans and evidence.

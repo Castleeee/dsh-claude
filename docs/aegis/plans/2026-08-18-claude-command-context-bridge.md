@@ -1,5 +1,12 @@
 # Claude Command and Context Bridge Implementation Plan
 
+> Historical record. Retained as evidence of the work at its recorded date;
+> package versions, file references, pending work, and verification results below
+> are not current status or instructions. For current behavior use the
+> [maintained architecture reference](../spec/2026-08-15-dsh-claude-spec.md) and the repository installation/upgrade guides.
+> Status clarified on 2026-09-14; the historical body is unchanged.
+
+
 **Goal:** Discover and execute Claude Code Skills/Commands through DSH’s native slash-command surface and show authoritative Claude context-window usage beside model selection.
 
 **Architecture:** Claude Agent SDK Query remains the metadata and execution source of truth. A bounded per-session catalog is projected to DSH’s public Client input-trigger registry; slash invocations submit through session-scoped `conversation.send()` so the ordinary DSH turn remains the sole execution owner without Host command lifecycle events. The SDK `getContextUsage()` result is normalized into the plugin-owned sidecar; a session-scoped Client projection supplies the latest sample to an additive `conversation.input.right` meter.

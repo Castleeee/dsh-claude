@@ -1,6 +1,7 @@
 # Following a DSH Desktop upgrade
 
-What to do when the Host moves under this package.
+Current procedure reviewed 2026-09-14. Historical appendices explain earlier
+failures; use the procedure below for current installations.
 
 ## Current baseline: Desktop 2.0.10 / Host 0.1.5-rc.2
 
@@ -38,298 +39,124 @@ in a separate source copy first. Do not rebuild the live checkout during a
 turn. Source comparison and clean diagnostics do not replace the manual smoke
 scenarios below; record those separately when actually exercised.
 
-## Why this needs a runbook
+## 1. Identify the installation and active profile
 
-The Desktop build ships **no type declarations**, and several of its client
-packages (`@deepseek-ai/dsh-client-ui-chat` among them) are **not published to
-npm at all**. `pnpm typecheck` therefore validates this package against whatever
-`@deepseek-ai/*` versions happen to be in `node_modules` — never against the Host
-it will actually run inside. During the Desktop 2.0 upgrade the installed
-devDependencies were `0.1.1-rc.2` while the Host ran `0.1.2-alpha.1`; five
-separate API breakages passed typecheck and the full test suite.
+Locate the running Desktop executable and its `resources` directory. Check
+package manifests inside the installation rather than inferring the core
+version from the Desktop version. Confirm the active profile and whether the
+plugin is registry-installed or linked before changing dependencies or builds.
+The local audited profile is `desktop`, linked to `K:/PersonalWorkspace/dsh-claude`.
+These are observations, not paths to assume on another machine.
 
-Worse, all five failed **silently**. A Slot entry that throws is caught by the
-Host and dropped, the shipped Desktop opens no DevTools, and startup still
-reports `rendererStatus: "healthy"`. The plugin rendered nothing while every
-signal said it was fine.
+Look for Host packages in this order:
 
-So: compile-time checking cannot help here. Runtime assertions and the Host's own
-source are the tools.
+1. `resources/app/node_modules/@deepseek-ai/`.
+2. `resources/app.asar.unpacked/node_modules/@deepseek-ai/`.
+3. If packages are inside `resources/app.asar`, extract that archive into a
+   temporary directory, never over the installation:
 
-## 0. If Desktop will not start
-
-Do this before anything else — everything below assumes a running app.
-
-First confirm the plugin is the cause:
-
-```bash
-tail -50 "$APPDATA/DSH Desktop/logs/dsh-$(date +%F).error.log"
+```sh
+npx --yes @electron/asar extract "<resources>/app.asar" "<scratch>/asar"
 ```
 
-`RendererStartupFailure` naming `@norman-else/dsh-claude` means this package.
-Without it, the fault is elsewhere and disabling the plugin will not help.
+The installed Host ships no usable development declarations for this audit.
+A green typecheck against the repository's dependency graph is not proof that
+its runtime exports match the Desktop installation.
 
-**Roll the checkout back.** The profile links the plugin as
-`link:K:/PersonalWorkspace/dsh-claude`, so the running plugin *is* the working
-tree — reverting the code reverts the plugin, with no DSH configuration
-touched:
+## 2. Read diagnostics before changing anything
 
-```bash
-git checkout <last-known-good> && pnpm build
-```
+On the audited Windows Desktop, Host logs are under
+`%APPDATA%/DSH Desktop/logs/host/`; Electron-shell logs are in `logs/`.
+Check the current run's timestamps, not only today's whole file.
 
-Restart Desktop. This is the fastest route and the one to try first.
+Look for `dsh-claude client [boot-check]`, `[slot-entry-crashed]`, and
+`dsh-claude:` refresh or initialization failures. Also check preset preservation
+and duplicate Loader messages. Attribute errors to the package in the stack:
+a failure in another plugin does not establish a Claude-plugin failure.
 
-**If that is not enough, unmount the plugin entirely.** Both edits are plain
-config and fully reversible:
+Boot checks cover declared services, selected methods, and the scoped composer
+CSS property. A healthy renderer or an empty error log cannot prove that every
+button has valid owner props or that every feature has mounted.
 
-1. In `~/.dsh/profiles/desktop/package.json`, drop `"@norman-else/dsh-claude"`
-   from `dsh.profile.bundles`. That list is what mounts bundles — `cordis.yml`
-   can be empty while the plugin still loads.
-2. Rename `~/.dsh/.agent-presets/claude/` aside. Its `agent.cordis.yml` names
-   `@norman-else/dsh-claude/preset-route`, which stops resolving once the
-   profile no longer carries the package, and could become a fresh startup
-   failure of its own.
+If startup fails, first identify whether this plugin is named in the failure.
+Preserve local edits and the existing profile. Restore a known-good package or
+build only through a reviewed rollback; do not blindly switch branches in a
+working checkout. If temporarily unmounting the bundle, account for its managed
+preset route too. See [INSTALL.md](../INSTALL.md) for guarded preset removal.
 
-Restart, debug with the plugin disabled, then restore both.
+## 3. Compare the old graph, new Host, and new npm graph
 
-Two honesty notes. Whether `RendererStartupFailure` is actually fatal was never
-confirmed — `app.asar` was not unpacked to read the throw path, and during the
-2.0 migration the window still opened while the renderer boot failed. And the
-unmount procedure is derived from the profile layout rather than tested. The
-rollback above is the verified path.
+Before installing new dependencies, retain the old manifests/lockfile or an
+isolated copy. Enumerate every runtime import from `src/`, client provider in
+`package.json`, and relevant transitive controller/runner package.
 
-## 1. Let the plugin report first
+Compare JS implementations and exports. Exclude source maps and declaration
+metadata from the behavioral diff. Normalize CSS hash prefixes and build paths,
+but preserve local class names and actual CSS declarations.
 
-Start Desktop, run one turn in a Claude session, then read the Host log:
+For published packages, update the development versions, workspace overrides,
+release-age exclusions, lockfile, and package-contract expectations together.
+Keep legacy exceptions explicit. Raise runtime peer minima only when a newly
+required API actually excludes older compatible Hosts.
 
-```bash
-grep "dsh-claude client" "$APPDATA/DSH Desktop/logs/dsh-$(date +%F).log"
-```
+Install and validate in an isolated source copy first. Compare the new npm
+implementations to the installed Host again: even identical version strings can
+hide Desktop-only patches. Do not copy Host packages into this repository or
+patch the installed Host to satisfy compilation.
 
-Two kinds appear:
+## 4. Audit every integration boundary
 
-- `[boot-check]` — a declared service or a Host CSS custom property is gone.
-  Emitted from `apply()` before anything else can fail.
-- `[slot-entry-crashed]` — a UI entry threw; the line carries the slot key, the
-  entry id, and the stack.
+- Runtime imports: verify exported values, not just matching type names.
+- Host services: agent routing, session snapshots, attachments, approval,
+  questions, managed subprocesses, command metadata, and preset discovery.
+- Client services: session/workspace controllers, conversation definitions,
+  input state/actions, input triggers, sidebar tab registration and opening.
+- Slots: audit both `slots.inject` and `slots.register`, including their owner
+  props and standard hooks. Current keys are `conversation.chat.node`,
+  `conversation.chat.turnTail`, `conversation.session.header.actions`,
+  `conversation.session.header.utilities`, `conversation.input.left`,
+  `conversation.input.dock`, `shell.overlay`, `settings.section`, and
+  `sidebar.right.pane.tab`.
+- DOM bridges: `hero-dom-bridge.ts`, `rewind-dom.ts`, `host-chrome.ts`,
+  `preset-seat-mark.ts`, and `composer-style-probe.ts`. Verify their `data-*`
+  attributes, local class names, and `--dsh-composer-card-max-width` scope.
+- Auxiliary queries: titles, branch summaries, model/usage probes, snippets,
+  refinement, and selection questions; they do not all use supervisor options.
+- Compatibility shims: verify whether upstream fixed their original cause and
+  whether retaining support for older Hosts still requires them.
 
-Both come from `src/client/boot-check.ts` and `src/client/client-diagnostics.ts`,
-reaching the log through the plugin's own `/plugins/dsh-claude/client-diagnostics`
-route. Silence plus working features means nothing drifted.
+Compare each Slot with a Host-owned contributor to the same Slot. A Slot name
+surviving is insufficient when its caller has stopped passing a property.
 
-## 2. Treat the installed Host as the only source of truth
+## 5. Repair and verify
 
-Read the real implementation, not `node_modules`:
+For an actual behavior change, reproduce it with the new Host contract before
+editing production code. Keep tests' fakes consistent with the current contract;
+a test asserting a removed field can preserve the bug.
 
-```
-E:\DSH Desktop\resources\app.asar.unpacked\node_modules\@deepseek-ai\
-```
+Run `pnpm check` with Node/pnpm available on PATH. On macOS add
+`/opt/homebrew/bin` if needed; on Windows use PowerShell-compatible commands.
+Report failures individually. An old platform fixture failure is not evidence
+that a new dependency broke the plugin, but the full check is still not green.
 
-Useful queries, all of which were needed for the 2.0 migration:
+Do not rebuild a checkout linked to Desktop while a turn is active. Once turns
+finish, build deliberately and fully quit/reopen Desktop. Hot reload alone is
+not sufficient validation. Then exercise the smoke list in
+[INSTALL.md](../INSTALL.md), including native coexistence, streaming, approval,
+questions, plan review, Stop/next turn, resume, sidebar tabs, queue, commands,
+worktree preparation, and naming. Record which checks were actually performed.
 
-```bash
-# Which package provides a service, and does the name still exist
-grep -rl 'super(ctx, "uiConversation"' --include=client.js .
+For UI inspection, Desktop may be launched with `--remote-debugging-port=9222`
+after a full quit when debugging is needed. Verify the port is listening;
+`DevToolsActivePort` may be stale. Allow session projection to settle, and keep
+the page visible when measuring animation-frame-driven DOM updates.
 
-# Slot catalogue: key, doc, registerOptions, declaredBy, occupants, example
-grep -n 'key: "conversation.chat.turnTail"' -A 30 dsh-cordis-client-runner/lib/client.js
+## 6. Leave current evidence
 
-# What a package declares it needs
-python -c "import json;print(json.load(open('dsh-client-ui-goal/package.json'))['dsh']['client']['inject'])"
-```
-
-**Fastest single technique:** diff against a Host plugin that registers into the
-same Slots. `dsh-client-ui-goal` and `dsh-client-ui-deliverables` overlap this
-package almost exactly; comparing their `dsh.client.inject` is how the two
-missing entries were found.
-
-For a CSS question, read the rule from the running page rather than guessing —
-CDP `CSS.getMatchedStylesForNode` gives the exact declaration.
-
-## 3. Reading the renderer
-
-DevTools shortcuts are disabled in the shipped build. Quit Desktop completely,
-then:
-
-```bash
-"E:\DSH Desktop\DSH Desktop.exe" --remote-debugging-port=9222
-```
-
-Attach over CDP at `http://127.0.0.1:9222/json/list`. `Runtime.consoleAPICalled`
-and `Runtime.exceptionThrown` carry the crashes; `Runtime.evaluate` measures the
-live DOM, which is how the composer-width regression was confirmed.
-
-The `DevToolsActivePort` file in the Desktop profile directory can be stale —
-check that the port is actually listening before trusting it.
-
-## 4. Two rules while iterating
-
-- **Restart Desktop completely after every rebuild.** `patchReload: "live"` hot
-  swaps the client bundle, and that tears down this plugin's rendering: nodes
-  unmount, projection subscriptions drop, and nothing re-arms. A fix verified
-  only through a hot reload will look like it failed.
-- **Never rebuild while a turn is running.** The same hot swap cuts the live
-  projection stream, and the in-flight turn never recovers its subscription.
-
-## 5. Leave the next upgrade a better signal
-
-When a fix lands, extend the automatic checks so the same class of drift reports
-itself next time:
-
-- New Host CSS custom property → add it to `CLAUDE_REQUIRED_CSS_VARIABLES` in
-  `src/client/boot-check.ts`. `var(--x, fallback)` cannot distinguish "the Host
-  stopped publishing this" from "the Host says this", so an unlisted property
-  degrades silently and forever.
-- New Host service → add it to `export const inject` in `src/client/index.tsx`;
-  the boot check walks that list.
-
-**Watch for tests that pin the bug.** Two of the 2.0 breakages were escorted
-through the upgrade by green tests:
-`client-repository-status.test.tsx` asserted the dead CSS variable name, and
-`supervisor.test.ts` asserted the wrong reported output-token count. When an
-assertion encodes a Host contract, re-derive it from the Host before trusting it.
-
-## 6. The full audit, in order
-
-The 2.0.5 upgrade showed that sections 1 and 2 are necessary but not
-sufficient: a slot whose owner stopped passing a prop leaves a button
-permanently disabled, and nothing crashes, so no log line ever appears. The
-sequence below is what finally found everything. Run all of it; do not stop at
-the first fix.
-
-`H` below is the Host package directory from section 2.
-
-**Step 1. Pin the development graph to the Host, then trust `tsc`.**
-
-```bash
-for p in "$H"/*/package.json; do node -e "const p=require('$p');console.log(p.name,p.version)"; done | sort -u -k2 | head
-pnpm view @deepseek-ai/dsh-session versions --json | tail -3
-```
-
-If the Host version is on npm: bump every `@deepseek-ai/*` devDependency, the
-`overrides` and `minimumReleaseAgeExclude` lists in `pnpm-workspace.yaml`, and
-the expectation in `test/package-contract.test.ts`. Reinstall, then confirm the
-installed copies are the Host's copies — this is what makes typecheck mean
-something:
-
-```bash
-for p in dsh-session dsh-commands dsh-client-ui-chat dsh-client-ui-conversation; do
-  diff -r -x '*.map' node_modules/@deepseek-ai/$p/lib "$H/$p/lib" | grep -cE '^[<>]'
-done
-```
-
-Zero, or CSS-hash noise only (`\0dsh-css:` regions from a different build
-machine), is the target. A transitive package that stays on the old version
-despite the override (`pnpm peers check` names it) is fixed by adding it as an
-explicit devDependency.
-
-**Step 2. Diff the Host against what the plugin was built on.**
-
-Before reinstalling, or from the old lockfile, diff each package the plugin
-imports (`grep -rhoE "from '@deepseek-ai/[^']+'" src preset | sort -u`) and
-read the JS changes with the typert declaration noise stripped:
-
-```bash
-diff -ru -x '*.map' node_modules/@deepseek-ai/$p/lib "$H/$p/lib" \
-  | grep -v '"declaration"\|"name":\|sourceLocation' | grep -E '^[+-]'
-```
-
-Every removed or renamed export, method, getter, or field becomes a grep over
-`src/` and `test/`. In 2.0.5 that was `Session.events` (six host-side reads),
-`seedLength`, `effectiveApprovalPolicy`, and the `MessageSourceMap` kinds.
-
-**Step 3. Owner props, slot by slot.** The Host decides per release what an
-entry receives. For every key in `ctx.slots.inject(...)`:
-
-```bash
-grep -hoE 'renderSlot\("conversation.input.left", [^)]*\)' "$H"/dsh-client-ui-*/lib/client.js
-```
-
-`{}` means the entry gets standard props only (`useInput`, `useSession`,
-`useSessions`, `useWorkspaces`, `useChat`, `useConversation`, `sessionId`,
-`inputActions`); `zone` or a literal object is the owner currency. Compare with
-what each component destructures (`grep -hoE "^export function Claude[A-Za-z]+\(\{[^}]*\}" src/client/*.tsx`).
-Prefer the standard hooks: they are the stable channel, owner props are not.
-
-**Step 4. Definitions, snapshots, services, symbols.** Four mechanical greps
-against the Host bundles:
-
-- Conversation definitions: `grep -o "definition\.[a-zA-Z]*" "$H"/dsh-client-ui-conversation/lib/client.js | sort -u`
-  lists every hook the assembler calls; any new one must be optional-chained
-  (`definition.publication?.(...)`) or the plugin's definitions must gain it.
-- Snapshot fields the client reads (`running`, `blank`, `displayTitle`, `cwd`,
-  `origin`, `sessionIds`, `workspaceId`, `current`): grep each in
-  `dsh-api-session-controller` and `dsh-api-workspace-controller`.
-- Client service methods (`sessions.scope/open/binding`, `workspaces.*`,
-  `uiConversation.events.register`, `conversation.input.for/updateQueue`,
-  `remote.agentPresets.select`): grep the method name in the bundles.
-- Every runtime symbol imported from a Host package: extract the import lists,
-  grep each name in that package's `lib/*.js`. Type-only imports are exempt.
-
-**Step 5. DOM bridges.** `hero-dom-bridge`, `rewind-dom`, `host-chrome`,
-`preset-seat-mark`, `details-resize` read the Host's DOM. Grep every
-`data-*` attribute and every `[class*="localName"]` they use in the bundles.
-CSS-module hashes change every release; local names rarely do, but check.
-
-**Step 6. Host side.** `grep -rhoE "\b(ctx|webCtx)\.[a-zA-Z]+(\.[a-zA-Z]+)?\(" src/*.ts | sort -u`
-and `grep -rhoE "ctx\.on\('[^']+'" src/*.ts`; confirm each method and event
-name in `$H/dsh-*/lib/index.js`. The host-side plugin fails loudly
-(`dsh-claude: ... refresh failed`), so the log usually already names these.
-
-**Step 7. Fix in TDD order.** Change the test fakes to the new Host shape first
-and watch the suite go red for the same reason the Host log does; only then
-touch `src/`. A fake that still exposes the old shape is how green tests
-escort a breakage through.
-
-**Step 8. Read every plugin warning literally.** `preserving user-modified
-preset` meant the installer's legacy detection had failed on a Windows path,
-not that the user had edited anything. `resolves from multiple active Loader
-sources` was the consequence, not a separate problem.
-
-**Step 9. Rebuild, quit Desktop completely, start it, read the log of the new
-run only**, then exercise the features by hand: a turn, the composer buttons
-with a draft, rewind, the diff and plan panels. Absence of log lines is not
-evidence for the client side.
-
-Driving this over CDP (section 3) works and is how 2.0.7 was verified, with
-two traps. A session opened from the sidebar takes several seconds to become
-plugin-owned (lane settle plus the repository probe), so a probe that reads
-the DOM after two seconds reports a missing diff button and no rewind seats
-that are simply late. And while the window is hidden behind the terminal,
-`document.visibilityState` is `hidden` and `requestAnimationFrame` never
-fires, so anything the plugin schedules on a frame (the preset seat mark) stays
-pending until the user looks at the window -- mark it manually in the probe
-to check the CSS, do not report it as broken.
-
-## 7. Desktop 2.0.7 moved two things the steps above rely on
-
-- **The Host packages are inside `app.asar` now.** `resources/app.asar.unpacked/`
-  holds native addons only. Extract before reading:
-
-  ```bash
-  npx --yes @electron/asar extract "E:/DSH Desktop/resources/app.asar" "$SCRATCH/asar"
-  # Host packages: $SCRATCH/asar/node_modules/@deepseek-ai/
-  ```
-
-- **The Host runs in an Electron utility process and logs to `logs/host/`.**
-  `$APPDATA/DSH Desktop/logs/dsh-<date>.log` now carries only the Electron
-  shell; every `dsh-claude:` line is in
-  `$APPDATA/DSH Desktop/logs/host/dsh-<date>.log`.
-
-- **Previous package versions are on npm**, so the old side of a diff no
-  longer has to come from `node_modules` before the bump:
-
-  ```bash
-  npm pack @deepseek-ai/dsh-session@0.1.2-rc.1 && tar -xzf deepseek-ai-dsh-session-0.1.2-rc.1.tgz
-  ```
-
-- **The 0.1.5 client packages import packages they do not declare** (`clsx`,
-  `anser`, `katex`, `shiki`, the `micromark-*` / `mdast-util-*` family, `zod`,
-  `mime-types`, and a few `@deepseek-ai/dsh-*` utilities). The Host bundles
-  them itself, so runtime is unaffected, but every client test file fails to
-  load until they are devDependencies. Find the set with a resolve loop over
-  each package's `lib/*.js` imports rather than one at a time.
+Record exact Desktop/core/SDK versions, installed package path, changed
+contracts, automated results, and live checks not performed. Add new service or
+CSS assumptions to the existing boot checks when they can be checked reliably.
+Keep current guidance at the top and past incidents under dated appendices.
 
 ## Appendix: the Desktop 2.0.7 breakages (Host 0.1.5-rc.1)
 
@@ -341,7 +168,7 @@ to check the CSS, do not report it as broken.
 | A stray ellipsis button in the Claude session header | `dsh-session-log-export` replaced its `sessionLogButton` capsule with a `moreButton` menu | Hide both local names |
 | Diff, plan, tasks, and overview panels never appeared; the header toggles did nothing | The `details` column slot is gone. Its replacement is a tabbed right sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`): a panel is a tab *type* declared in `ctx.sidebarRightTabs`, its body registered into `sidebar.right.pane.tab` under the type id, opened per session through `ctx.sidebarRight.openTabIn`. Missed by the slot audit because these four registrations used `slots.register({ name: 'details' })` directly rather than `slots.inject` -- audit both spellings | `src/client/sidebar-tabs.tsx`; the plugin's maximize overlays and details-column resize are gone, the Host's own fullscreen and close take over |
 
-Also: the Host bug is the Host's to fix; when a Desktop release sets the flag itself (or stops re-spawning `process.execPath`) the wrapper becomes a no-op because it only acts when the flag is absent.
+Historical follow-up: Desktop 2.0.10 sets the flag in the runner bootstrap environment. The plugin wrapper remains for old Hosts; see the current baseline above for why upstream repair does not necessarily make the wrapper a no-op.
 
 ## Appendix: the Desktop 2.0 breakages, as worked examples
 
