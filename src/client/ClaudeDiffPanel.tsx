@@ -17,7 +17,7 @@ import { branchLabel, repositoryLabel } from './branch-label.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { ClaudeClientProjection } from './projection.ts'
 import { useActionToast } from './action-toast.tsx'
-import { executeRepositoryAction, generateCommitMessage, loadRepositoryActionPreview } from './repository-action-api.ts'
+import { executeRepositoryAction, generateCommitMessage, generatePullRequestText, loadRepositoryActionPreview } from './repository-action-api.ts'
 import {
   composeCommentsPrompt,
   loadMentionableUsers,
@@ -652,13 +652,24 @@ export function ClaudeDiffPanel({ useClaudeProjection, t, sessionId, closeDetail
         return
       }
       setDialog({ action, preview, loading: true, submitting: false })
-      const generated = await generateCommitMessage(sessionId, preview.fingerprint, controller.signal, root)
-      // The dialog is usable while the message is being written, so the
+      // The dialog is usable while the text is being written, so the
       // generated text only fills fields nobody has typed into, and lands on
       // whatever state the dialog reached in the meantime.
-      setMessage(current => (current.trim() === '' ? generated : current))
-      setPrTitle(current => (current.trim() === '' ? generated : current))
-      setPrBody(current => (current.trim() === '' ? `Summary: ${generated}\n\nChanges:\n- ${generated}` : current))
+      if (action === 'create-pr') {
+        // The pull request is described from the branch, not the tree: its
+        // commits and diff against the base, plus what the commit before it
+        // will add. The commit message covers the tree alone, when there is one.
+        const [pullRequest, generated] = await Promise.all([
+          generatePullRequestText(sessionId, preview.fingerprint, undefined, controller.signal, root),
+          preview.files.length > 0 ? generateCommitMessage(sessionId, preview.fingerprint, controller.signal, root) : Promise.resolve(undefined),
+        ])
+        setMessage(current => (current.trim() === '' ? generated ?? pullRequest.title : current))
+        setPrTitle(current => (current.trim() === '' ? pullRequest.title : current))
+        setPrBody(current => (current.trim() === '' ? pullRequest.body : current))
+      } else {
+        const generated = await generateCommitMessage(sessionId, preview.fingerprint, controller.signal, root)
+        setMessage(current => (current.trim() === '' ? generated : current))
+      }
       setDialog(current => (current === undefined ? current : { ...current, loading: false }))
     }).catch(error => {
       if (!controller.signal.aborted) setDialog({ action, loading: false, submitting: false, error: error instanceof Error ? error.message : t('diffActionFailed') })
@@ -946,7 +957,7 @@ export function ClaudeDiffPanel({ useClaudeProjection, t, sessionId, closeDetail
           </> : <>
             <div style={styles.diffModalFiles}>{dialog.preview.files.map(file => <div key={file.path} style={styles.diffModalFile}><span style={styles.diffModalFilePath} title={file.path}>{file.path}</span><span style={styles.diffModalFileState}>{file.untracked ? t('diffUntracked') : file.staged && file.unstaged ? t('diffStagedUnstaged') : file.staged ? t('diffStaged') : t('diffUnstaged')}</span></div>)}</div>
             <label style={styles.diffModalCheckbox}><input type="checkbox" checked={includeUnstaged} disabled={!dialog.preview.hasUnstaged && !dialog.preview.hasUntracked} onChange={event => setIncludeUnstaged(event.currentTarget.checked)} />{t('diffIncludeUnstaged')}</label>
-            <label style={styles.diffModalField}>{t('diffCommitMessage')}<textarea style={styles.diffModalTextarea} value={message} maxLength={512} onChange={event => setMessage(event.currentTarget.value)} /></label>
+            <label style={styles.diffModalField}>{t('diffCommitMessage')}<textarea style={styles.diffModalTextarea} value={message} maxLength={2048} onChange={event => setMessage(event.currentTarget.value)} /></label>
           </>}
           {dialog.action === 'create-pr' ? <>
             <label style={styles.diffModalField}>{t('diffPrTitle')}<input style={styles.diffModalTextInput} value={prTitle} maxLength={256} onChange={event => setPrTitle(event.currentTarget.value)} /></label>

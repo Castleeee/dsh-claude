@@ -80,7 +80,11 @@ describe('repository action parsing', () => {
 
 describe('repository action service', () => {
   it('generates a bounded message with an isolated tool-free Claude invocation', async () => {
-    const fake = runtime([...previewResults(), ...previewResults(), { stdout: 'Update repository actions\n' }])
+    const fake = runtime([
+      ...previewResults(), ...previewResults(),
+      { stdout: 'Resolve auth settings for generated titles\nDrop the fold control\n' },
+      { stdout: 'Update repository actions\n' },
+    ])
     const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
     const preview = await service.preview('C:/repo/session')
     await expect(service.generateMessage('C:/repo/session', preview.fingerprint)).resolves.toBe('Update repository actions')
@@ -89,15 +93,117 @@ describe('repository action service', () => {
     // both are what makes the cold start of this one-shot run drag.
     expect(command).toMatchObject({
       cwd: 'C:/repo',
-      env: {},
+      // Sonnet with thinking off: the diff is the whole task, and thinking was
+      // most of the wall time when the naming call in prompts.ts measured it.
+      env: { MAX_THINKING_TOKENS: '0' },
       argv: [
-        'C:/bin/claude.exe', '-p',
+        'C:/bin/claude.exe', '-p', '--model', 'sonnet',
         '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
         '--setting-sources', 'project,local',
-        '--tools', '', '--output-format', 'text', expect.any(String),
+        '--tools', '', '--output-format', 'text',
       ],
+      // On stdin, not argv: a real diff is longer than Windows lets a command line be.
+      stdio: { stdin: { data: expect.any(String) } },
     })
-    expect(command.argv.at(-1)).not.toContain('WARP.md')
+    const prompt = String((command.stdio.stdin as { data: string }).data)
+    expect(prompt).not.toContain('WARP.md')
+    // The diff is what the message describes; the recent subjects only set its style.
+    expect(prompt).toContain('-old\n+new')
+    expect(prompt).toContain('- Resolve auth settings for generated titles')
+    expect(fake.spawn.mock.calls.at(-2)?.[0].argv).toEqual(['C:/bin/git.exe', 'log', '--no-merges', '--format=%s', '-n', '10', 'HEAD', '--'])
+  })
+
+  it('keeps a subject a little over 72 characters for the user to trim', async () => {
+    const subject = 'Generate multi-change commit messages and describe pull requests from the branch'
+    const fake = runtime([...previewResults(), ...previewResults(), { stdout: '' }, { stdout: `${subject}
+` }])
+    const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
+    const preview = await service.preview('C:/repo/session')
+    await expect(service.generateMessage('C:/repo/session', preview.fingerprint)).resolves.toBe(subject)
+  })
+
+  it('keeps a body that lists each independent change under the subject', async () => {
+    const fake = runtime([
+      ...previewResults(), ...previewResults(),
+      { stdout: '' },
+      { stdout: '```\n"Rename the queue dock and fix the token meter"\n\n- Rename ClaudeQueueDock props to match the Host slot.\n- Count cache reads once in the token meter.\n```\n' },
+    ])
+    const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
+    const preview = await service.preview('C:/repo/session')
+    await expect(service.generateMessage('C:/repo/session', preview.fingerprint)).resolves.toBe(
+      'Rename the queue dock and fix the token meter\n\n- Rename ClaudeQueueDock props to match the Host slot.\n- Count cache reads once in the token meter.',
+    )
+  })
+
+  it('falls back to a file-based subject when the generated subject is unusable', async () => {
+    const fake = runtime([
+      ...previewResults(), ...previewResults(),
+      { stdout: '' },
+      { stdout: `${'x'.repeat(130)}\n\n- body\n` },
+    ])
+    const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
+    const preview = await service.preview('C:/repo/session')
+    await expect(service.generateMessage('C:/repo/session', preview.fingerprint)).resolves.toBe('Update 2 repository files')
+  })
+
+  it('describes a pull request from the branch commits and diff against the base, plus the tree', async () => {
+    const fake = runtime([
+      ...previewResults(), ...previewResults(),
+      { stdout: 'origin/main\n' },
+      { stdout: 'Add the pull request generator\n\n\0Fix the fingerprint check\nIt compared the wrong hash.\n\0' },
+      { stdout: 'diff --git a/src/pr.ts b/src/pr.ts\n@@ -0,0 +1 @@\n+export const pr = 1\n' },
+      { stdout: 'Title: Generate pull request text from the branch diff\nSummary: Pull request titles and descriptions now come from the branch itself.\n\nChanges:\n- Add a generator that reads base..HEAD.\n- Fix the fingerprint check.\n' },
+    ])
+    const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
+    const preview = await service.preview('C:/repo/session')
+    await expect(service.generatePullRequest('C:/repo/session', preview.fingerprint)).resolves.toEqual({
+      title: 'Generate pull request text from the branch diff',
+      body: 'Summary: Pull request titles and descriptions now come from the branch itself.\n\nChanges:\n- Add a generator that reads base..HEAD.\n- Fix the fingerprint check.',
+    })
+    const argv = fake.spawn.mock.calls.map(call => call[0].argv)
+    expect(argv).toContainEqual(['C:/bin/git.exe', 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
+    expect(argv).toContainEqual(['C:/bin/git.exe', 'log', '--no-merges', '--format=%s%n%b%x00', '-n', '51', 'origin/main..HEAD', '--'])
+    expect(argv.some(item => item.includes('diff') && item.includes('origin/main...HEAD'))).toBe(true)
+    const prompt = String((fake.spawn.mock.calls.at(-1)?.[0].stdio.stdin as { data: string }).data)
+    expect(prompt).toContain('Fix the fingerprint check\nIt compared the wrong hash.')
+    expect(prompt).toContain('+export const pr = 1')
+    // The uncommitted tree goes into the same commit the pull request is opened from.
+    expect(prompt).toContain('-old\n+new')
+  })
+
+  it('uses the named base branch and falls back to the commits when the answer is malformed', async () => {
+    const fake = runtime([
+      ...previewResults(), ...previewResults(),
+      { stdout: 'refs/remotes/origin/release\n' },
+      { stdout: 'Add the pull request generator\n\n\0' },
+      { stdout: '' },
+      { stdout: 'Here is a title.\n' },
+    ])
+    const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
+    const preview = await service.preview('C:/repo/session')
+    await expect(service.generatePullRequest('C:/repo/session', preview.fingerprint, 'release')).resolves.toEqual({
+      title: 'Add the pull request generator',
+      body: 'Summary: Add the pull request generator\n\nChanges:\n- Add the pull request generator',
+    })
+    const argv = fake.spawn.mock.calls.map(call => call[0].argv)
+    expect(argv).toContainEqual(['C:/bin/git.exe', 'rev-parse', '--verify', '--quiet', '--symbolic-full-name', 'refs/remotes/origin/release'])
+    expect(argv).toContainEqual(['C:/bin/git.exe', 'log', '--no-merges', '--format=%s%n%b%x00', '-n', '51', 'origin/release..HEAD', '--'])
+  })
+
+  it('describes only the tree when no base can be resolved', async () => {
+    const fake = runtime([
+      ...previewResults(), ...previewResults(),
+      { stdout: '', exitCode: 1 },
+      { stdout: 'Title: Update src/a.ts\nSummary: One line.\n\nChanges:\n- Replace old with new.\n' },
+    ])
+    const service = new RepositoryActionService(fake, 'C:/bin/claude.exe')
+    const preview = await service.preview('C:/repo/session')
+    await expect(service.generatePullRequest('C:/repo/session', preview.fingerprint)).resolves.toEqual({
+      title: 'Update src/a.ts',
+      body: 'Summary: One line.\n\nChanges:\n- Replace old with new.',
+    })
+    const argv = fake.spawn.mock.calls.map(call => call[0].argv)
+    expect(argv.some(item => item.includes('log') && item.includes('--no-merges'))).toBe(false)
   })
 
   it('rejects a stale fingerprint before staging anything', async () => {

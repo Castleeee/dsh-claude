@@ -3,6 +3,7 @@ import {
   RepositoryActionClientError,
   executeRepositoryAction,
   generateCommitMessage,
+  generatePullRequestText,
   loadRepositoryActionPreview,
 } from '../src/client/repository-action-api.ts'
 import { __resetPluginTransport, __setPluginFetch } from '../src/client/plugin-transport.ts'
@@ -65,5 +66,19 @@ describe('repository action client API', () => {
     // The transport forwards only the failed route's message and error code, so
     // the commit that survived a failed push no longer reaches the dialog.
     expect(error.commit).toBeUndefined()
+  })
+})
+
+describe('pull request text client API', () => {
+  it('asks the pull-request arm with the base branch and validates the title/body pair', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Add PR text', body: 'Summary: x\n\nChanges:\n- y' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ title: 'Add PR text' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    __setPluginFetch(fetch as unknown as typeof fetch)
+    await expect(generatePullRequestText('s', 'f', ' release ', undefined, '/b')).resolves.toEqual({ title: 'Add PR text', body: 'Summary: x\n\nChanges:\n- y' })
+    expect(fetch.mock.calls[0]?.[0]).toContain('/pull-request?')
+    expect(fetch.mock.calls[0]?.[0]).toContain('root=%2Fb')
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ fingerprint: 'f', baseBranch: 'release' })
+    await expect(generatePullRequestText('s', 'f')).rejects.toThrow('Invalid generated pull request text')
   })
 })

@@ -71,6 +71,7 @@ function service() {
       truncated: false, hasStaged: false, hasUnstaged: false, hasUntracked: false,
     })),
     generateMessage: vi.fn(async () => 'Update files'),
+    generatePullRequest: vi.fn(async () => ({ title: 'Update files', body: 'Summary: Update files\n\nChanges:\n- Update files' })),
     execute: vi.fn(async () => ({ commit: 'b', pushed: false })),
   }
 }
@@ -90,6 +91,12 @@ describe('repository action route', () => {
     await ctx.handler(request('POST', `${CLAUDE_REPOSITORY_ACTION_PATH}/message?sessionId=owned`, { fingerprint: 'fingerprint', cwd: '/attacker' }), message)
     expect(message.statusCode).toBe(200)
     expect(actions.generateMessage).toHaveBeenCalledWith('/canonical/repo', 'fingerprint')
+
+    const pullRequest = response()
+    await ctx.handler(request('POST', `${CLAUDE_REPOSITORY_ACTION_PATH}/pull-request?sessionId=owned`, { fingerprint: 'fingerprint', baseBranch: 'release', cwd: '/attacker' }), pullRequest)
+    expect(pullRequest.statusCode).toBe(200)
+    expect(JSON.parse(pullRequest.body)).toEqual({ title: 'Update files', body: 'Summary: Update files\n\nChanges:\n- Update files' })
+    expect(actions.generatePullRequest).toHaveBeenCalledWith('/canonical/repo', 'fingerprint', 'release')
 
     const execute = response()
     await ctx.handler(request('POST', `${CLAUDE_REPOSITORY_ACTION_PATH}?sessionId=owned`, {
