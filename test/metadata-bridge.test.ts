@@ -16,13 +16,24 @@ function createHostContext() {
 
 function createAgent() {
   const statusHandlers: Array<(payload: { status: string }) => void> = []
+  const preStepHandlers: Array<(
+    payload: { agent: Agent; messages: unknown[]; signal: AbortSignal },
+    next: () => Promise<unknown>,
+  ) => Promise<unknown>> = []
 
   const agentCtx = {
-    on: (event: string, handler: (payload: { status: string }) => void) => {
+    on: (event: string, handler: unknown) => {
+      if (event === 'agent/pre-step') {
+        preStepHandlers.push(handler as (typeof preStepHandlers)[number])
+        return () => {
+          const index = preStepHandlers.indexOf(handler as (typeof preStepHandlers)[number])
+          if (index >= 0) preStepHandlers.splice(index, 1)
+        }
+      }
       expect(event).toBe('agent/status')
-      statusHandlers.push(handler)
+      statusHandlers.push(handler as (payload: { status: string }) => void)
       return () => {
-        const index = statusHandlers.indexOf(handler)
+        const index = statusHandlers.indexOf(handler as (payload: { status: string }) => void)
         if (index >= 0) statusHandlers.splice(index, 1)
       }
     },
@@ -39,7 +50,7 @@ function createAgent() {
     ctx: agentCtx,
   } as unknown as Agent
 
-  return { agent, agentCtx }
+  return { agent, agentCtx, preStepHandlers }
 }
 
 describe('metadata bridge', () => {
@@ -217,5 +228,59 @@ describe('metadata bridge', () => {
     expect(supervisor.supportedCommands).toHaveBeenCalled()
     expect(published).toHaveBeenLastCalledWith([])
     expect((supervisor.contextUsage as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('restores a skipped human prompt in the step batch the mount owns', async () => {
+    const host = createHostContext()
+    const { agent, preStepHandlers } = createAgent()
+
+    // The pending prompt the loop's positional claim walked past, and the
+    // plugin notices that took the turn's slot instead.
+    const pending = {
+      id: 'h1',
+      role: 'user',
+      content: [{ type: 'text', text: 'run the migration' }],
+      source: { kind: 'user' },
+    }
+    const remove = vi.fn(() => true)
+    ;(agent as unknown as { inbox: unknown }).inbox = {
+      nextTurn: [pending],
+      nextStep: [],
+      remove,
+    }
+
+    const supervisor = {
+      supportedCommands: vi.fn(async () => []),
+      contextUsage: vi.fn(async () => ({
+        model: 'claude-test',
+        totalTokens: 1,
+        maxTokens: 200_000,
+        percentage: 0.5,
+        categories: [],
+      })),
+      planUsage: vi.fn(async () => ({ subscription_type: 'max', rate_limits_available: false })),
+    } as unknown as Parameters<typeof mountClaudeMetadata>[1]
+
+    const sidecar = { writeContextUsage: vi.fn(async () => undefined) } as unknown as ClaudeSidecarRepository
+    const dispose = mountClaudeMetadata(host, supervisor, agent, 'default', sidecar, vi.fn(), () => ({ list: () => [] }))
+
+    // One mounted listener is the recovery; drive it the way the loop would.
+    await vi.waitFor(() => expect(preStepHandlers.length).toBeGreaterThan(0))
+    const decision = await preStepHandlers[0]!(
+      {
+        agent,
+        messages: [],
+        signal: new AbortController().signal,
+      },
+      async () => ({
+        kind: 'enter',
+        messages: [{ id: 'a1', role: 'user', content: [], source: { kind: 'plugin', plugin: 'user-approval' } }],
+      }),
+    )
+
+    expect(remove).toHaveBeenCalledWith('h1')
+    expect((decision as { messages: Array<{ id: string }> }).messages.map(item => item.id)).toEqual(['h1', 'a1'])
+
+    await dispose?.()
   })
 })

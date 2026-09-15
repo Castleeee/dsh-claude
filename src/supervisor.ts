@@ -43,6 +43,7 @@ import { claudeModelValue, recordClaudeModels } from './model-catalog.ts'
 import { readPlanUsageFrom } from './plan-usage.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
+import { EMPTY_REWIND_STATE, rewindPromptFor } from './rewind.ts'
 
 export const CLAUDE_INITIALIZATION_TIMEOUT_MS = 30_000
 export const CLAUDE_INTERRUPT_TIMEOUT_MS = 5_000
@@ -65,6 +66,32 @@ export const LIVE_ELAPSED_INTERVAL_MS = 1_000
 export type ClaudeSteeringOutcome = 'delivered' | 'unavailable'
 /** What {@link ClaudeSupervisor.stopTask} did with one stop request. */
 export type ClaudeStopTaskOutcome = 'stopped' | 'unavailable'
+
+/** The SDK's own report of one file rewind.
+ *
+ *  Mirrored structurally rather than imported so this module keeps its single
+ *  dependency on the SDK's public types, and so a field the CLI adds later
+ *  cannot change this module's public shape without a deliberate edit. */
+export interface ClaudeRewindFilesResult {
+  readonly canRewind: boolean
+  readonly error?: string
+  /** Paths the rewind would touch (dry run) or did touch (real run). */
+  readonly filesChanged?: readonly string[]
+  readonly insertions?: number
+  readonly deletions?: number
+  readonly skippedLinks?: number
+}
+
+/** What {@link ClaudeSupervisor.rewindFiles} did with one rewind request. */
+export type ClaudeRewindOutcome =
+  | { readonly status: 'ok'; readonly result: ClaudeRewindFilesResult }
+  /** No live process to ask, or one that is still starting. */
+  | { readonly status: 'unavailable' }
+  /** A turn is still editing the working tree; rewinding would race it. */
+  | { readonly status: 'busy' }
+  /** The turn has no recorded prompt uuid, so it names no rewind target. */
+  | { readonly status: 'no-target' }
+  | { readonly status: 'error'; readonly message: string }
 
 /** One block of a steered message, in the shape DSH hands the caller.
  *
@@ -668,6 +695,65 @@ export class ClaudeSupervisor {
     await this.#scheduleTasksSnapshot(entry, true)
     await this.#continueAfterTasks(entry)
     return 'stopped'
+  }
+
+  /** Rewind the files Claude changed back to their state at one user message.
+   *
+   *  This delegates to the SDK rather than replaying the tool arguments DSH
+   *  observes. Claude Code keeps a copy of each file immediately before it
+   *  modifies it, so its answer is derived from real bytes; the arguments on
+   *  DSH's event feed arrive truncated (4,000 characters) and with
+   *  secret-shaped text redacted, which makes them unfit to write back. A
+   *  rewind built from them would silently restore the wrong content in
+   *  exactly the large edits where a rewind matters most.
+   *
+   *  `dryRun` reports what a rewind would touch without touching anything, so
+   *  a caller can show the change list before committing to it.
+   *
+   *  The target is named by turn, not by uuid: the prompt uuid is this plugin's
+   *  own internal handle, so the caller names the turn it can see and this
+   *  method resolves it from the recorded prompts.
+   *
+   *  `unavailable` means there is nothing to ask — no live process, or a turn
+   *  whose prompt uuid was never recorded (it ran before this plugin tracked
+   *  them, or Claude never answered it). A turn with no recorded target is
+   *  reported as such rather than resolved to a nearby turn, because rewinding
+   *  to a different message discards everything between the two. */
+  async rewindFiles(
+    sessionId: string,
+    turn: number,
+    options: { dryRun?: boolean } = {},
+  ): Promise<ClaudeRewindOutcome> {
+    const entry = this.#entries.get(sessionId)
+    if (entry === undefined || entry.state === 'disposed' || entry.state === 'starting') {
+      return { status: 'unavailable' }
+    }
+    // A rewind writes the working tree, so it must not race a turn that is
+    // still editing it. The caller checks this too; the check is repeated here
+    // because this is the last point before the SDK is asked to act.
+    if (entry.state === 'running' || entry.state === 'interrupting') {
+      return { status: 'busy' }
+    }
+
+    let userMessageId: string | undefined
+    try {
+      const projection = await this.#sidecar.read(sessionId)
+      userMessageId = rewindPromptFor(projection.rewind ?? EMPTY_REWIND_STATE, turn)
+    } catch {
+      return { status: 'unavailable' }
+    }
+    if (userMessageId === undefined) return { status: 'no-target' }
+
+    try {
+      const result = await this.#control(
+        entry,
+        entry.query.rewindFiles(userMessageId, options),
+        'Claude Code file rewind',
+      )
+      return { status: 'ok', result: { ...result } }
+    } catch (error) {
+      return { status: 'error', message: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   runTurn(request: ClaudeTurnRequest): Promise<AsyncIterable<ClaudeTurnStreamEvent>> {
@@ -1281,6 +1367,13 @@ export class ClaudeSupervisor {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: PLAN_MODE_HANDOFF_PROMPT },
       tools: { type: 'preset', preset: 'claude_code' },
       includePartialMessages: true,
+      // Claude Code keeps a copy of every file it is about to modify, so a
+      // turn's edits can be rewound to their pre-turn bytes through the SDK's
+      // `rewindFiles`. That is a stronger guarantee than reconstructing a file
+      // from the tool arguments DSH observes: those arrive truncated and
+      // redacted, which makes them unfit for writing back. The snapshots live
+      // in the CLI's own store and are pruned by it.
+      enableFileCheckpointing: true,
       // Opt-in: the CLI emits hook lifecycle frames only when asked. Without
       // them a hook that holds a turn is indistinguishable from a slow model,
       // and the frames cost nothing when no hook is configured.
@@ -2123,12 +2216,37 @@ export class ClaudeSupervisor {
    *  later rewind of the following turn can fork exactly here. Best effort:
    *  a missing anchor only makes a rewind fall back to an earlier turn. */
   async #recordChainAnchor(entry: SupervisorEntry, active: ActiveTurn): Promise<void> {
+    // Recorded together with the anchor: both are written once per settled turn
+    // and both are read by the checkpoint that follows, so sequencing them here
+    // keeps one persistence point rather than scattering them across the two
+    // settlement paths that call this.
+    await this.#recordRewindPrompt(entry, active)
     const uuid = entry.lastChainUuid
     if (uuid === undefined) return
     try {
       await this.#sidecar.recordRewindAnchor(entry.sessionId, active.cursor.turn, uuid)
     } catch {
       // The sidecar is advisory; a failed anchor never fails the turn.
+    }
+  }
+
+  /** Pin the user message one settled turn was opened by.
+   *
+   *  Claude Code's file rewind is addressed by that uuid, and this plugin is
+   *  what mints it, so recording it here is what lets a turn on screen name its
+   *  own rewind target.
+   *
+   *  Recorded only for a turn Claude actually answered. A prompt that was still
+   *  queued when the turn ended never became a message the CLI can address, so
+   *  storing its uuid would offer a rewind target that does not exist — and a
+   *  rewind that silently finds nothing is worse than a card that says so. */
+  async #recordRewindPrompt(entry: SupervisorEntry, active: ActiveTurn): Promise<void> {
+    if (!active.sawActivity) return
+    try {
+      await this.#sidecar.recordRewindPrompt(entry.sessionId, active.cursor.turn, active.promptUuid)
+    } catch {
+      // Advisory in the same way the chain anchor is: a turn whose prompt uuid
+      // was not recorded simply offers no file rewind.
     }
   }
 

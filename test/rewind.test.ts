@@ -117,6 +117,7 @@ describe('rewind persistence', () => {
       ranges: [{ start: 4, end: 6 }],
       anchors: [{ turn: 1, uuid: 'uuid-1' }],
       snapshots: [],
+      prompts: [],
       pending: { resumeAt: 'uuid-1' },
     })
     await store.clearRewindPending('session')

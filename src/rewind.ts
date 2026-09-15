@@ -37,6 +37,18 @@ export interface ClaudeRewindSnapshot {
   readonly tree: string
 }
 
+/** The user message one DSH turn was opened by.
+ *
+ *  Claude Code's file checkpointing is addressed by the uuid of the *user
+ *  message* a rewind should return to — not by a turn number and not by the
+ *  chain entry an {@link ClaudeRewindAnchor} records. This plugin mints that
+ *  uuid itself when it submits a prompt, so recording it here is how the turn a
+ *  user sees on screen becomes the target `rewindFiles` accepts. */
+export interface ClaudeRewindPrompt {
+  readonly turn: number
+  readonly uuid: string
+}
+
 /** Fork target for the next Claude spawn; `fresh` starts an empty session. */
 export type ClaudeRewindResume = { readonly resumeAt: string } | { readonly fresh: true }
 
@@ -47,11 +59,14 @@ export interface ClaudeRewindState {
   readonly anchors: readonly ClaudeRewindAnchor[]
   /** Working trees the surviving turns started from, ascending by turn. */
   readonly snapshots: readonly ClaudeRewindSnapshot[]
+  /** The user message each turn was opened by, ascending by turn. This is what
+   *  Claude Code's own file rewind is addressed by. */
+  readonly prompts: readonly ClaudeRewindPrompt[]
   /** Armed once by a rewind, consumed by the next Claude spawn. */
   readonly pending?: ClaudeRewindResume
 }
 
-export const EMPTY_REWIND_STATE: ClaudeRewindState = { ranges: [], anchors: [], snapshots: [] }
+export const EMPTY_REWIND_STATE: ClaudeRewindState = { ranges: [], anchors: [], snapshots: [], prompts: [] }
 
 /** Sessions outlive their rewinds; every list stays bounded. */
 export const MAX_REWIND_RANGES = 200
@@ -59,6 +74,9 @@ export const MAX_REWIND_ANCHORS = 2_000
 /** Shorter than the anchors: each entry pins a whole tree in the object
  *  database, and a rewind reaches back turns rather than hundreds of them. */
 export const MAX_REWIND_SNAPSHOTS = 100
+/** Kept as long as the anchors are: a prompt uuid is a short string, and the
+ *  file rewind it addresses can reach as far back as a conversation rewind. */
+export const MAX_REWIND_PROMPTS = 2_000
 
 /** Absorb one span into an ascending, non-overlapping range list. Adjacent
  *  spans merge so a rewind of a rewind reads as one hidden block. */
@@ -110,6 +128,30 @@ export function recordRewindSnapshot(
   return { ...state, snapshots }
 }
 
+/** Record the user message one turn was opened by, replacing a re-run turn's.
+ *
+ *  A re-run turn mints a new prompt uuid, so the old entry must be replaced
+ *  rather than kept: rewinding to the previous attempt's message would return
+ *  the files to a state that attempt produced, not the one on screen. */
+export function recordRewindPrompt(
+  state: ClaudeRewindState,
+  prompt: ClaudeRewindPrompt,
+): ClaudeRewindState {
+  const prompts = [...state.prompts.filter(item => item.turn !== prompt.turn), prompt]
+    .sort((left, right) => left.turn - right.turn)
+    .slice(-MAX_REWIND_PROMPTS)
+  return { ...state, prompts }
+}
+
+/** The user message one turn was opened by, or undefined when none was
+ *  recorded — an older transcript, or a turn whose prompt never reached Claude.
+ *  A caller must treat undefined as "no rewind target", never as "use the
+ *  nearest turn": returning to a different turn's message discards everything
+ *  between them. */
+export function rewindPromptFor(state: ClaudeRewindState, turn: number): string | undefined {
+  return state.prompts.find(item => item.turn === turn)?.uuid
+}
+
 /** The turn a surface seq belongs to: the first turn opened at or after it.
  *  A message accepted but never run belongs to no logged turn, so nothing
  *  Claude holds is discarded and every anchor stays valid. */
@@ -150,6 +192,10 @@ export function planRewind(
     ranges: mergeRewindRanges(state.ranges, { start: seq, end: last }),
     anchors,
     snapshots: state.snapshots.filter(item => item.turn < turn),
+    // A discarded turn's prompt uuid goes with it: the message it names is no
+    // longer in the transcript, so a file rewind addressed by it would return
+    // the tree to a state the visible conversation never shows.
+    prompts: state.prompts.filter(item => item.turn < turn),
     pending: kept === undefined ? { fresh: true } : { resumeAt: kept.uuid },
   }
 }
