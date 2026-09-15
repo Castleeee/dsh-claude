@@ -358,7 +358,27 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       throw new Error(`dsh-claude: auxiliary ${options.purpose} calls are not routed into the Claude session`)
     }
     const agent = resolveAgent(this.#agents, options)
-    if (this.#presetIdFor(agent) !== CLAUDE_CODE_PRESET_ID) {
+    const composedPreset = this.#presetIdFor(agent)
+    if (composedPreset !== CLAUDE_CODE_PRESET_ID) {
+      // Diagnostic for the mismatch a preset switch can leave behind: what the
+      // request asked for, what the agent was composed with, and what the
+      // session itself has logged. Those three are the values that disagree
+      // when a switched session keeps routing to the provider it started on,
+      // and the refusal below is otherwise the only trace of it — in the
+      // session, never in the Host log. Wrapped, because a diagnostic must
+      // never change the failure it explains.
+      try {
+        const session = agent.session as unknown as {
+          requestHeader?: () => { config?: unknown } | undefined
+        }
+        const logged = session.requestHeader?.()?.config
+        const logger = (agent.ctx as unknown as { logger?: { warn?: (message: string) => void } }).logger
+        logger?.warn?.(
+          `dsh-claude: MISMATCH session=${String(agent.id)} composedPreset=${String(composedPreset)} asked=${CLAUDE_CODE_PROVIDER}/${String(options.model)} logged=${JSON.stringify(logged ?? null)}`,
+        )
+      } catch {
+        // Never mask the refusal being reported.
+      }
       throw new Error(`dsh-claude: provider ${CLAUDE_CODE_PROVIDER} is available only to the ${CLAUDE_CODE_PRESET_ID} preset`)
     }
     const thinkingMode = thinkingModeFor(options.reasoningEffort)
