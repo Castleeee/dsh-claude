@@ -174,17 +174,39 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
     }
   }
 
-  /** Sessions whose permission the wiring is currently moving to the
-   *  destination world. Their `sandbox/mode` append is the move itself and must
-   *  not be recorded as the user's new default. */
+  /** Sessions whose permission the wiring is setting itself. Their events are
+   *  the move, not the user's choice, and recording one would let a world
+   *  switch overwrite the default the user actually picked.
+   *
+   *  Keyed by session and consulted when the queued work RUNS rather than when
+   *  the event arrives, because the Host pins a new session's permission during
+   *  creation — before this wiring hears about the session at all. Those appends
+   *  are already queued by the time the session's own world is known, and they
+   *  carry the OTHER world's preset: the document they were read from is the one
+   *  this wiring is about to replace. A flag checked at arrival time could not
+   *  see them. */
   const seeding = new Set<string>()
 
-  /** Apply one world's captured state to a session that has no state of its
-   *  own: its model first (a session may be past its first turn), then its
-   *  permission, which is only seedable while no turn has started. */
-  const applyWorldToSession = (session: Session, world: WorldId, sections: Record<string, unknown>): void => {
+  /** Whether a session's own events are the wiring's work rather than a choice. */
+  const isSeeding = (session: unknown): boolean => {
+    const id = (session as { id?: unknown } | undefined)?.id
+    return typeof id === 'string' && seeding.has(id)
+  }
+
+  /**
+   * Apply one world's captured state to a session.
+   *
+   * `overwrite` decides what a session's own selection is worth. A preset
+   * change is the user moving the session between worlds, so the destination's
+   * model replaces whatever the session held — that is the whole point of the
+   * switch, and skipping it when the session has a selection of its own is what
+   * left the composer showing the outgoing world's model. A session being
+   * created has no choice to respect, but a session the Host is re-attaching
+   * does, and that one is left alone.
+   */
+  const applyWorldToSession = (session: Session, world: WorldId, sections: Record<string, unknown>, overwrite: boolean): void => {
     const selection = modelSelectionOf(sections[AGENT_DEFAULT_MODEL_NS])
-    if (selection !== undefined && !hasOwnSelection(session)) {
+    if (selection !== undefined && (overwrite || !hasOwnSelection(session))) {
       const agent = ctx.agents.get(session.id as never)
       try {
         if (agent === undefined) options.recordModelSelection?.(session, selection)
@@ -243,7 +265,7 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
       // session directly, from the snapshot this switch installed rather than a
       // fresh store read — a re-read races the next switch and is what paired
       // one world's provider with another's model.
-      applyWorldToSession(session, world, outcome.sections)
+      applyWorldToSession(session, world, outcome.sections, true)
     })
   })
 
@@ -252,10 +274,18 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
   // says nothing about which world a change came from.
   const stopEvents = ctx.on('session/event', (session, event) => {
     const record = event as { type?: unknown; data?: unknown }
+    // Whether this append is the wiring's own work, read twice on purpose. An
+    // append raised by our own seeding arrives while the guard is up, but the
+    // guard is lowered by the time the queued work runs; an append the Host
+    // makes while creating a session arrives BEFORE the guard is raised, and is
+    // only recognisable once it is. Either way the append is the move itself,
+    // not the user's choice.
+    const seedingAtArrival = isSeeding(session)
     if (record.type === 'model/selection') {
       const selection = modelSelectionOf(record.data)
       if (selection === undefined) return
       enqueue(async () => {
+        if (seedingAtArrival || isSeeding(session)) return
         const world = worldOfSession(session, await options.switch.activeWorld())
         await options.switch.captureModel(world, selection)
       })
@@ -264,13 +294,8 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
     if (record.type === 'permission/preset') {
       const preset = (record.data as { preset?: unknown } | undefined)?.preset
       if (typeof preset !== 'string' || preset.length === 0) return
-      // Decide here, while the guard is still raised: the append is synchronous
-      // but the work below is queued, and the guard is lowered by the time it
-      // runs. A preset appended by our own seeding is that move, not a user
-      // choice, and recording it would let a world switch overwrite the default
-      // the user actually picked.
-      if (seeding.size > 0) return
       enqueue(async () => {
+        if (seedingAtArrival || isSeeding(session)) return
         const active = await options.switch.activeWorld()
         const world = worldOfSession(session, active)
         await options.switch.capturePermission(world, preset)
@@ -284,8 +309,8 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
     if (record.type !== 'sandbox/mode') return
     const mode = (record.data as { mode?: unknown } | undefined)?.mode
     if (typeof mode !== 'string') return
-    if (seeding.size > 0) return
     enqueue(async () => {
+      if (seedingAtArrival || isSeeding(session)) return
       const preset = options.permissionNameFor?.(mode)
       if (preset === undefined) return
       const active = await options.switch.activeWorld()
@@ -312,15 +337,25 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
     if (preset === undefined) return
     if (hasOwnSelection(session) || !isStillBlank(ctx, session)) return
     const world = worldFor(preset)
+    // Raised synchronously, before the queued work: the Host pins this session's
+    // permission from the document as part of the same creation, and those
+    // appends are already queued when this listener runs. They carry the
+    // outgoing world's preset and must not be captured anywhere until the
+    // session's own world has been installed below.
+    seeding.add(session.id)
     enqueue(async () => {
-      let outcome: SwitchOutcome | undefined
-      if (await options.switch.activeWorld() !== world) {
-        outcome = await options.switch.switchTo(world)
-        options.log?.(`configuration world ${outcome.from} -> ${outcome.to} for new session ${session.id} (${preset})`)
+      try {
+        let outcome: SwitchOutcome | undefined
+        if (await options.switch.activeWorld() !== world) {
+          outcome = await options.switch.switchTo(world)
+          options.log?.(`configuration world ${outcome.from} -> ${outcome.to} for new session ${session.id} (${preset})`)
+        }
+        const sections = outcome?.sections ?? await options.switch.sectionsOf(world)
+        if (sections === undefined) return
+        applyWorldToSession(session, world, sections, false)
+      } finally {
+        seeding.delete(session.id)
       }
-      const sections = outcome?.sections ?? await options.switch.sectionsOf(world)
-      if (sections === undefined) return
-      applyWorldToSession(session, world, sections)
     })
   })
 

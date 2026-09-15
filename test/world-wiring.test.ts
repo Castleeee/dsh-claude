@@ -254,6 +254,68 @@ describe('world wiring', () => {
     stop()
   })
 
+  it('moves a session that already carries a model of its own onto the destination world', async () => {
+    // A session that has ever chosen a model has one of its own, and the switch
+    // must replace it: the world is the user's own reason for switching, and
+    // skipping a session that has a selection left the composer showing the
+    // outgoing world's model — the "switching does nothing" report.
+    const settings = gateway({ 'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const installed: unknown[] = []
+    const { ctx, agents, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      applyModel: (_agent, selection) => { installed.push(selection) },
+    })
+    const s1 = session('s1', { preset: 'claude', pending: { provider: 'opencode-go', model: 'deepseek-v4-pro' } })
+    agents.set('s1', { session: s1 })
+    await worldSwitch.captureModel(CLAUDE_WORLD, { provider: 'claude', model: 'opus' })
+
+    emit('agent-preset/selected', 's1', 'claude')
+    await settle()
+    expect(installed[installed.length - 1]).toEqual({ provider: 'claude', model: 'opus' })
+    stop()
+  })
+
+  it('does not capture the permission a new session is pinned with from the other world', async () => {
+    // The Host pins a new session's permission from the settings document as
+    // part of creating it, before this wiring even hears about the session. That
+    // preset belongs to the world that owns the document, not to the session's
+    // own world, and capturing it moved read-only into the shared world — where
+    // it then became every later session's default.
+    const settings = gateway({ permission: { defaultPreset: 'workspace-write' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const applied: string[] = []
+    const { ctx, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      applyPermission: (_target, preset) => { applied.push(preset) },
+    })
+    const claude = session('claude-session', { preset: 'claude' })
+
+    // Claude's world ends up read-only, and the document follows it.
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    emit('session/event', claude, { type: 'permission/preset', data: { preset: 'read-only' } })
+    await settle()
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    expect(settings.document.permission).toEqual({ defaultPreset: 'read-only' })
+
+    // A shared-world session is created; the Host pins it from that document.
+    const created = session('cordis-session', { preset: 'cordis' })
+    emit('session/event', created, { type: 'permission/preset', data: { preset: 'read-only' } })
+    emit('session/created', created)
+    await settle()
+
+    expect((await world.sectionsOf(DEFAULT_WORLD))?.[PERMISSION_NS]).toEqual({ defaultPreset: 'workspace-write' })
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[PERMISSION_NS]).toEqual({ defaultPreset: 'read-only' })
+    expect(applied[applied.length - 1]).toBe('workspace-write')
+    stop()
+  })
+
   it('applies a model to a session that has already started', async () => {
     // Unlike a permission, the model is not gated on the blank-session rule:
     // the user's own model change applies to a started session, and so must a
