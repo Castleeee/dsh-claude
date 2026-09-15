@@ -34,6 +34,8 @@ class FakeQuery extends AsyncQueue<SDKMessage> {
    *  which is the CLI saying it stopped processing the submitted prompt. */
   readonly interrupt = vi.fn(async () => ({ still_queued: [] as string[] }))
   readonly setModel = vi.fn(async () => undefined)
+  readonly applyFlagSettings = vi.fn(async (_settings: unknown) => undefined)
+  readonly stopTask = vi.fn(async (_taskId: string) => undefined)
   readonly setPermissionMode = vi.fn(async () => undefined)
   readonly initializationResult = vi.fn(async () => ({
     commands: [],
@@ -768,6 +770,71 @@ describe('Claude supervisor', () => {
           usage: { totalTokens: 120, toolUses: 2, durationMs: 3_000 },
         }] },
       })
+    })
+    await runtime.dispose()
+  })
+
+  it('stops a running task on the live process, and refuses one that already settled', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    expect(runtime.tasks('dsh-session-1')).toEqual([])
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('unavailable')
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'task-1',
+      description: 'Watch logs',
+      task_type: 'local_bash',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push(result('started in the background'))
+    await collect(output)
+    await vi.waitFor(() => { expect(runtime.tasks('dsh-session-1')).toHaveLength(1) })
+
+    await expect(runtime.stopTask('dsh-session-1', 'task-9')).resolves.toBe('unavailable')
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('stopped')
+    expect(query.stopTask).toHaveBeenCalledWith('task-1')
+    // The board is settled here rather than waiting for a notification the CLI
+    // may never send, so the panel the user is looking at stops pulsing.
+    await vi.waitFor(async () => {
+      await expect(projection(runtime)).resolves.toMatchObject({
+        tasks: { tasks: [{ taskId: 'task-1', status: 'stopped' }] },
+      })
+    })
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('unavailable')
+    expect(query.stopTask).toHaveBeenCalledTimes(1)
+    await runtime.dispose()
+  })
+
+  it('leaves the board running when the CLI cannot reach the task', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const query = transport.queries[0]!
+    query.stopTask.mockRejectedValueOnce(new Error('no such task'))
+    query.push(init())
+    query.push({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'task-1',
+      description: 'Watch logs',
+      task_type: 'local_bash',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push(result('started in the background'))
+    await collect(output)
+    await vi.waitFor(() => { expect(runtime.tasks('dsh-session-1')).toHaveLength(1) })
+
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('unavailable')
+    expect(runtime.tasks('dsh-session-1')[0]?.status).toBe('running')
+    // The refusal reached the client, so the board is what it already was.
+    await expect(projection(runtime)).resolves.toMatchObject({
+      tasks: { tasks: [{ taskId: 'task-1', status: 'running' }] },
     })
     await runtime.dispose()
   })
