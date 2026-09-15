@@ -6,9 +6,19 @@ import { detectRepositoryOperation } from './repository-status.ts'
 
 const MAX_OUTPUT_BYTES = 256 * 1024
 const MAX_PATCH_CHARS = 64 * 1024
-const MAX_MESSAGE_CHARS = 512
+const MAX_MESSAGE_CHARS = 2048
 const MAX_PR_TEXT_CHARS = 8 * 1024
 const MAX_UNPUSHED_COMMITS = 20
+/** What one generation shows the model: the whole patch when it fits, the
+ *  head of it otherwise, and the prompt says which. */
+const MAX_GENERATE_PATCH_CHARS = 48 * 1024
+const MAX_SUBJECT_CHARS = 72
+/** Past this the first line is not a subject at all; under it, a subject a
+ *  few characters over what the prompt asked for is the user's to trim. */
+const MAX_SUBJECT_KEPT_CHARS = 120
+const MAX_PR_TITLE_CHARS = 100
+const MAX_RECENT_SUBJECTS = 10
+const MAX_PR_COMMITS = 50
 const GIT_TIMEOUT_MS = 15_000
 const REMOTE_TIMEOUT_MS = 60_000
 const GENERATE_TIMEOUT_MS = 60_000
@@ -16,14 +26,24 @@ const GENERATE_TIMEOUT_MS = 60_000
  *  use is cost: MCP servers (which `ask` already skips for the same reason,
  *  and which stall for as long as an unreachable one takes to give up) and the
  *  user's own hooks and settings. Project settings stay: a repository's commit
- *  conventions belong in the message. `--tools ''` keeps `--output-format`
- *  between it and the prompt -- both flags are variadic. */
+ *  conventions belong in the message. The prompt itself goes in on stdin:
+ *  a 48 KB diff on argv is past what Windows lets a process be started with
+ *  (ENAMETOOLONG, and the fallback subject where a message should be).
+ *
+ *  Sonnet rather than the session's default: describing a diff needs no
+ *  frontier model, but telling three unrelated changes apart in one diff is
+ *  where haiku starts to blur them, and sonnet costs only a second or two
+ *  more. Extended thinking is off (see {@link GENERATE_ENV}): the naming call
+ *  in prompts.ts measured it as most of a ten-second run. */
 const GENERATE_ARGUMENTS: readonly string[] = [
   '-p',
+  '--model', 'sonnet',
   '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
   '--setting-sources', 'project,local',
   '--tools', '', '--output-format', 'text',
 ]
+/** A CLI that stops honouring the variable is slow again, never wrong. */
+const GENERATE_ENV: Readonly<Record<string, string>> = { MAX_THINKING_TOKENS: '0' }
 
 type RepositoryActionRuntime = Pick<SubprocessRuntime, 'resolveExecutable' | 'spawn'>
 export type RepositoryActionKind = 'commit' | 'commit-push' | 'push' | 'create-pr' | 'merge-pr' | 'update-branch' | 'resolve-continue' | 'resolve-abort'
@@ -81,6 +101,16 @@ export interface RepositoryActionRequest {
   readonly pullNumber?: number
   /** Push once `resolve-continue` finishes the operation it resumed. */
   readonly push?: boolean
+}
+
+export interface PullRequestText {
+  readonly title: string
+  readonly body: string
+}
+
+interface BranchCommit {
+  readonly subject: string
+  readonly body: string
 }
 
 export interface RepositoryActionResult {
@@ -161,11 +191,80 @@ function fallbackCommitMessage(files: readonly RepositoryActionFile[]): string {
   return `Update ${files.length} repository files`
 }
 
-function normalizedGeneratedMessage(value: string, fallback: string): string {
-  const first = value.split(/\r?\n/u).map(line => line.trim()).find(Boolean)
-  if (first === undefined) return fallback
-  const message = first.replace(/^['"`]+|['"`]+$/gu, '').replace(/[\0\r\n]/gu, ' ').trim()
-  return message.length === 0 || message.length > 72 ? fallback : message
+/** The model's answer as lines: fences and a trailing prose apology dropped,
+ *  carriage returns and NULs (which git and the request validator refuse)
+ *  gone, leading blank lines gone. */
+function answerLines(value: string): readonly string[] {
+  const lines = value.replace(/\0/gu, '').split(/\r?\n/u).map(line => line.trimEnd())
+  const kept = lines.filter(line => !line.trim().startsWith('```'))
+  while (kept.length > 0 && kept[0]?.trim() === '') kept.shift()
+  while (kept.length > 0 && kept.at(-1)?.trim() === '') kept.pop()
+  return kept
+}
+
+function unquoted(line: string): string {
+  return line.trim().replace(/^['"`]+|['"`]+$/gu, '').trim()
+}
+
+/** Subject line, then a body when the model wrote one: the subject must at
+ *  least look like one, the body is kept as the bullets the model listed, and the
+ *  whole thing is cut at a line boundary under the commit-message cap. */
+export function normalizeCommitMessage(value: string, fallback: string): string {
+  const lines = answerLines(value)
+  const subject = unquoted(lines[0] ?? '')
+  if (subject.length === 0 || subject.length > MAX_SUBJECT_KEPT_CHARS) return fallback
+  const body = lines.slice(1)
+  while (body.length > 0 && body[0]?.trim() === '') body.shift()
+  const kept: string[] = [subject]
+  if (body.length > 0) kept.push('')
+  let previousBlank = false
+  for (const line of body) {
+    const blank = line.trim() === ''
+    if (blank && previousBlank) continue
+    previousBlank = blank
+    const next = [...kept, line].join('\n')
+    if (next.length > MAX_MESSAGE_CHARS) break
+    kept.push(line)
+  }
+  while (kept.length > 1 && kept.at(-1)?.trim() === '') kept.pop()
+  return kept.join('\n')
+}
+
+/** `Title:` on its own line, then the `Summary:` / `Changes:` body the
+ *  create-pr arm insists on. Anything else is the caller's fallback. */
+export function parsePullRequestText(value: string): PullRequestText | undefined {
+  const lines = answerLines(value)
+  const titleAt = lines.findIndex(line => /^title:/iu.test(line.trim()))
+  if (titleAt < 0) return undefined
+  const title = unquoted(lines[titleAt]!.trim().replace(/^title:/iu, ''))
+  if (title.length === 0 || title.length > MAX_PR_TITLE_CHARS) return undefined
+  const summaryAt = lines.findIndex((line, index) => index > titleAt && /^summary:/iu.test(line.trim()))
+  if (summaryAt < 0) return undefined
+  const body = lines.slice(summaryAt).map(line => line.trim() === '' ? '' : line).join('\n').trim()
+  return validPullRequestBody(body) && body.length <= MAX_PR_TEXT_CHARS ? { title, body } : undefined
+}
+
+function fallbackPullRequestText(commits: readonly BranchCommit[], files: readonly RepositoryActionFile[]): PullRequestText {
+  const title = commits[0]?.subject ?? fallbackCommitMessage(files)
+  const changes = commits.length > 0 ? commits.map(commit => commit.subject) : files.map(file => `Update ${file.path}`)
+  return {
+    title,
+    body: `Summary: ${title}\n\nChanges:\n${(changes.length > 0 ? changes : [title]).map(item => `- ${item}`).join('\n')}`,
+  }
+}
+
+function parseBranchCommits(output: string): readonly BranchCommit[] {
+  return output.split('\0').flatMap(record => {
+    const [subject = '', ...rest] = record.replace(/^\r?\n/u, '').split(/\r?\n/u)
+    if (subject.trim().length === 0) return []
+    return [{ subject: subject.trim().slice(0, 140), body: rest.join('\n').trim() }]
+  }).slice(0, MAX_PR_COMMITS)
+}
+
+function boundedPatch(patch: string): { readonly text: string; readonly truncated: boolean } {
+  return patch.length > MAX_GENERATE_PATCH_CHARS
+    ? { text: patch.slice(0, MAX_GENERATE_PATCH_CHARS), truncated: true }
+    : { text: patch, truncated: false }
 }
 
 function validPrUrl(value: string): string | undefined {
@@ -208,18 +307,96 @@ export class RepositoryActionService {
     const preview = await this.#preview(cwd)
     if (preview.fingerprint !== fingerprint) throw new RepositoryActionError('repository-changed', 'Repository changes have changed. Refresh the commit panel.')
     const fallback = fallbackCommitMessage(preview.files)
+    const git = await this.#git()
+    // Style only: the subjects show how this repository phrases a change, the
+    // diff is the only thing the message is allowed to describe.
+    const recent = await this.#run(git, ['log', '--no-merges', '--format=%s', '-n', String(MAX_RECENT_SUBJECTS), 'HEAD', '--'], preview.root, GIT_TIMEOUT_MS)
+    const subjects = recent.exitCode === 0 && !recent.lossy
+      ? recent.stdout.split(/\r?\n/u).map(line => line.trim()).filter(line => line.length > 0)
+      : []
+    const patch = boundedPatch(preview.patch)
     const prompt = [
-      'Write one concise English git commit subject (imperative mood, maximum 72 characters).',
-      'Return only the subject without quotes, markdown, body, or explanation.',
+      'Write a git commit message for the changes below, in English.',
+      `Line 1 is the subject: imperative mood, at most ${MAX_SUBJECT_CHARS} characters, saying what the change does rather than which files it touches.`,
+      'If the diff contains more than one independent change, leave line 2 blank and then list each change on its own line starting with "- ", one sentence each, describing what changed as the diff shows it.',
+      'A change with a single purpose gets the subject line only.',
+      'Describe only what the diff shows. Do not invent motivation, do not summarise the file list, and do not mention that the diff is truncated.',
+      'Return only the message: no quotes, no markdown fences, no explanation before or after it.',
+      ...(subjects.length > 0 ? [`Recent commit subjects of this repository, as a style reference only:\n${subjects.map(subject => `- ${subject}`).join('\n')}`] : []),
       `Files: ${preview.files.map(file => file.path).join(', ')}`,
-      `Diff:\n${preview.patch.slice(0, 24 * 1024)}`,
+      ...(patch.truncated || preview.truncated ? ['The diff below is cut short; the file list above is complete.'] : []),
+      `Diff:\n${patch.text}`,
     ].join('\n')
     try {
-      const result = await this.#run(this.#claudeExecutable, GENERATE_ARGUMENTS.concat(prompt), preview.root, GENERATE_TIMEOUT_MS)
-      return result.exitCode === 0 && !result.lossy ? normalizedGeneratedMessage(result.stdout, fallback) : fallback
+      const result = await this.#run(this.#claudeExecutable, GENERATE_ARGUMENTS, preview.root, GENERATE_TIMEOUT_MS, MAX_OUTPUT_BYTES, GENERATE_ENV, prompt)
+      return result.exitCode === 0 && !result.lossy ? normalizeCommitMessage(result.stdout, fallback) : fallback
     } catch {
       return fallback
     }
+  }
+
+  /** Title and description for the pull request the branch would open: the
+   *  commits and diff since the base, plus whatever is still uncommitted,
+   *  since create-pr commits that first. Base is the named branch on origin,
+   *  else origin's default; with neither, the tree alone. */
+  async generatePullRequest(cwd: string, fingerprint: string, baseBranch?: string): Promise<PullRequestText> {
+    const preview = await this.#preview(cwd)
+    if (preview.fingerprint !== fingerprint) throw new RepositoryActionError('repository-changed', 'Repository changes have changed. Refresh the commit panel.')
+    const git = await this.#git()
+    const base = await this.#baseRef(git, preview.root, baseBranch)
+    let commits: readonly BranchCommit[] = []
+    let branchPatch = ''
+    let branchTruncated = false
+    if (base !== undefined) {
+      const log = await this.#run(git, ['log', '--no-merges', '--format=%s%n%b%x00', '-n', String(MAX_PR_COMMITS + 1), `${base}..HEAD`, '--'], preview.root, GIT_TIMEOUT_MS)
+      if (log.exitCode === 0 && !log.lossy) commits = parseBranchCommits(log.stdout)
+      const funcname = await diffFuncnameArgs()
+      const diff = await this.#run(git, [...funcname, 'diff', '--no-ext-diff', '--no-color', '--unified=3', `${base}...HEAD`, '--', ':(exclude)WARP.md', ':(exclude)**/WARP.md'], preview.root, GIT_TIMEOUT_MS, MAX_OUTPUT_BYTES)
+      if (diff.exitCode === 0) {
+        branchPatch = diff.stdout
+        branchTruncated = diff.lossy
+      }
+    }
+    const fallback = fallbackPullRequestText(commits, preview.files)
+    const patch = boundedPatch([branchPatch, preview.patch].filter(part => part.length > 0).join('\n'))
+    const prompt = [
+      'Write the title and description of a GitHub pull request for the changes below, in English.',
+      'Answer in exactly this shape and nothing else:',
+      `Title: <imperative title, at most ${MAX_SUBJECT_CHARS} characters, saying what the pull request does>`,
+      'Summary: <one sentence saying what the pull request achieves as a whole>',
+      '',
+      'Changes:',
+      '- <one line per independent change, describing what changed in the code>',
+      '',
+      'List every independent change the diff contains as its own bullet. Do not merge unrelated changes into one bullet, and do not describe anything the diff does not show.',
+      'No markdown headings, no quotes, no fences, no text before "Title:" or after the last bullet.',
+      ...(commits.length > 0
+        ? [`Commits on this branch, newest first:\n${commits.map(commit => (commit.body.length > 0 ? `- ${commit.subject}\n${commit.body}` : `- ${commit.subject}`)).join('\n')}`]
+        : []),
+      ...(preview.files.length > 0 ? [`Uncommitted files that will go into the same pull request: ${preview.files.map(file => file.path).join(', ')}`] : []),
+      ...(patch.truncated || branchTruncated || preview.truncated ? ['The diff below is cut short; the commit list is complete.'] : []),
+      `Diff:\n${patch.text}`,
+    ].join('\n')
+    try {
+      const result = await this.#run(this.#claudeExecutable, GENERATE_ARGUMENTS, preview.root, GENERATE_TIMEOUT_MS, MAX_OUTPUT_BYTES, GENERATE_ENV, prompt)
+      return (result.exitCode === 0 && !result.lossy ? parsePullRequestText(result.stdout) : undefined) ?? fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  /** `origin/<branch>` when the named branch exists on origin, else the branch
+   *  origin's HEAD points at. Neither on a checkout that never fetched. */
+  async #baseRef(git: string, root: string, baseBranch: string | undefined): Promise<string | undefined> {
+    const named = baseBranch?.trim() ?? ''
+    if (named.length > 0) {
+      if (/[\0\r\n\s]|\.\.|^-/u.test(named)) return undefined
+      const verified = await this.#run(git, ['rev-parse', '--verify', '--quiet', '--symbolic-full-name', `refs/remotes/origin/${named}`], root, GIT_TIMEOUT_MS)
+      return verified.exitCode === 0 && !verified.lossy && verified.stdout.trim() === `refs/remotes/origin/${named}` ? `origin/${named}` : undefined
+    }
+    const head = await this.#run(git, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], root, GIT_TIMEOUT_MS)
+    const ref = head.stdout.trim()
+    return head.exitCode === 0 && !head.lossy && /^origin\/[^\s]+$/u.test(ref) ? ref : undefined
   }
 
   execute(cwd: string, request: RepositoryActionRequest): Promise<RepositoryActionResult> {
@@ -477,14 +654,14 @@ export class RepositoryActionService {
     return result
   }
 
-  #run(executable: string, args: readonly string[], cwd: string, timeoutMs: number, maxBytes = MAX_OUTPUT_BYTES): Promise<CommandResult> {
+  #run(executable: string, args: readonly string[], cwd: string, timeoutMs: number, maxBytes = MAX_OUTPUT_BYTES, env: Readonly<Record<string, string>> = {}, stdin?: string): Promise<CommandResult> {
     return collect(this.#runtime.spawn({
       argv: [executable, ...args],
       cwd,
-      stdio: { stdin: 'ignore', stdout: { maxBytes }, stderr: { maxBytes: MAX_OUTPUT_BYTES } },
+      stdio: { stdin: stdin === undefined ? 'ignore' : { data: stdin }, stdout: { maxBytes }, stderr: { maxBytes: MAX_OUTPUT_BYTES } },
       graceMs: 1_000,
       signal: AbortSignal.timeout(timeoutMs),
-      env: {},
+      env,
     }))
   }
 }

@@ -1,55 +1,120 @@
-# Agent Installation Runbook
+# Installation and removal runbook
 
-This runbook is idempotent for a local `dsh-claude` checkout and an existing DSH `web` profile.
+Current guidance: 2026-09-14, plugin 0.1.51, development graph DSH 0.1.5-rc.2.
 
-## 1. Verify the checkout
+## 1. Identify the running installation
+
+Use the DSH CLI supplied by the installation you intend to modify. Determine
+its active profile before installing: the local Desktop setup uses `desktop`;
+a standalone Web setup may use `web`. Do not create another profile or server
+to compensate for a command aimed at the wrong one. No port is assumed here.
+
+Examples below use `desktop`; substitute the actual profile throughout.
+If `dsh` is not on PATH, use that installation's CLI entry point instead.
+
+## 2. Install from npm
 
 ```sh
-cd /path/to/dsh-claude
-export PATH="/opt/homebrew/bin:$PATH"
-pnpm install
+dsh plugin --profile desktop add @norman-else/dsh-claude
+```
+
+Wait for the profile operation to finish, then quit Desktop completely and
+reopen it. Select **Claude** in a new session. The plugin maintains a guarded
+compatibility preset at `$DSH_HOME/.agent-presets/claude`; its route uses the
+active profile package source. User-modified preset files are preserved.
+
+## 3. Install from a source checkout
+
+Requires Node.js 20 or later and pnpm. From the checkout:
+
+```sh
+pnpm install --frozen-lockfile
 pnpm check
+```
+
+On macOS, prepend `/opt/homebrew/bin` to PATH if that is where pnpm is installed.
+PowerShell does not use the POSIX `PATH=... command` syntax.
+
+If this checkout is already linked to a running profile, finish active turns
+before rebuilding it. A build can trigger a live client reload and interrupt
+projection subscriptions. During active work, validate in a separate source
+copy with its own dependencies; do not copy its build into the live checkout.
+After a deliberate live rebuild, fully restart Desktop to verify activation.
+
+Link from PowerShell:
+
+```powershell
+dsh plugin --profile desktop add "link:$($PWD.Path.Replace('\', '/'))"
+```
+
+Or from a POSIX shell:
+
+```sh
+dsh plugin --profile desktop add "link:$(pwd)"
+```
+
+## 4. Check the local Claude CLI
+
+Claude Code owns authentication. Use its existing login or supported settings
+configuration; never request, copy, print, or store credentials in this plugin.
+
+```sh
 node lib/bin.mjs doctor
 ```
 
-Stop if Doctor cannot find an authenticated local Claude Code installation. Do not request, copy, or write credentials.
+If discovery fails, use `doctor --executable` with the absolute native Claude
+executable path. The standalone CLI's path search is simpler than the Host
+resolver; on Windows prefer the native executable over an npm `.cmd` shim.
 
-## 2. Link the bundle into the current Web profile
+Read each report field. A zero exit code from the standalone Doctor establishes
+version detection, not authenticated query success; its handshake is `not-run`.
+An `unknown` authentication report is inconclusive. Use Settings/Doctor inside
+DSH and a minimal real turn to verify the installed environment.
 
-The bundle keeps a protected compatibility preset at `$DSH_HOME/.agent-presets/claude`, because DSH Desktop 2.0.4 does not retain third-party preset roots from bundle patches. Its route uses the active profile package source to avoid duplicate client-module Loaders. User-modified preset files are preserved.
+Main turns, session titles, and branch summaries load `user`, `project`, and
+`local` settings. Summary calls also inherit behavior settings and use their
+own working directory (`process.cwd()`), not a borrowed session process.
+
+## 5. Smoke test after a full Desktop restart
+
+1. Confirm **Claude** appears in the new-session preset picker.
+2. Verify an existing native preset still works.
+3. Send a minimal read-only Claude prompt; confirm streaming, final output, and title.
+4. Under an access mode that requires approval, exercise deny and allow-once
+   with a harmless temporary edit. Full access intentionally bypasses ordinary approvals.
+5. Test a user question and plan review; both must remain available under Full access.
+6. Stop a running turn, then send another prompt; confirm cleanup and continuity.
+7. Restart Desktop and continue the same conversation to verify resume.
+8. Open diff, plan, tasks, and overview tabs in the right sidebar; exercise
+   fullscreen and close. Check command completion, prompt controls, and queue UI.
+9. In a disposable repository, verify worktree creation and naming. Preserve
+   needed changes before deleting its workspace: managed-worktree reconciliation
+   can remove dirty files. Merged-branch cleanup is a separate guarded action.
+10. Read the new Host log for `dsh-claude client [boot-check]`,
+    `[slot-entry-crashed]`, and plugin refresh failures.
+
+On the current Windows Desktop, Host logs are under
+`%APPDATA%/DSH Desktop/logs/host/`; shell startup logs are one directory above.
+Record what was actually exercised. A source audit or green unit tests do not
+establish successful real authentication, approval, streaming, or resume.
+
+## 6. Remove the plugin
+
+Clean up the compatibility preset while the profile still resolves the package:
 
 ```sh
-dsh plugin --profile web add "link:$(pwd)"
+dsh plugin --profile desktop exec dsh-claude remove-preset
+dsh plugin --profile desktop remove @norman-else/dsh-claude
 ```
 
-Do not start another DSH Web server. This bundle must load in the existing app at `http://127.0.0.1:56454`.
-
-## 3. Refresh and smoke test
-
-1. Refresh the existing DSH Web page.
-2. Confirm **Claude** appears in the new-session Agent Preset picker.
-3. Run one existing native preset prompt and verify it remains native.
-4. Create a Claude session and send a read-only prompt.
-5. Send one edit prompt; verify DSH displays a permission request. Exercise reject first, then allow once with a harmless temporary file.
-6. Cancel a running prompt and confirm the cancelled session owns no child `claude` process that is still executing cancelled work or left orphaned/unowned.
-7. Refresh the browser and continue the session.
-8. Restart DSH and confirm the next prompt resumes the persisted Claude session.
-
-A live prompt can consume the user's Claude subscription. Keep it minimal.
-
-## 4. Uninstall
-
-Clean up the managed preset while the profile can still execute the package CLI, then remove the plugin:
+DSH has no plugin uninstall lifecycle hook. Direct package removal can leave
+the compatibility preset behind. If necessary, invoke the matching version's
+CLI with the same `DSH_HOME` and inspect its result:
 
 ```sh
-dsh plugin --profile web exec dsh-claude remove-preset
-dsh plugin --profile web remove @norman-else/dsh-claude
+pnpm dlx @norman-else/dsh-claude@<installed-version> remove-preset
 ```
 
-DSH has no plugin uninstall lifecycle hook, so direct package removal can leave the compatibility preset behind. After direct removal, no source checkout is required; run the matching package version:
-
-```sh
-pnpm dlx @norman-else/dsh-claude@<version> remove-preset
-```
-
-Cleanup refuses to delete user-modified preset content.
+Cleanup refuses user-modified presets; review them manually rather than forcing
+removal. Restart Desktop after uninstalling. Removing the plugin does not mean
+all Claude transcripts, sidecars, settings, or worktrees have been deleted.

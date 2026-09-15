@@ -11,3 +11,8 @@ src/**/*.js
 src/**/*.js.map
 src/**/*.d.ts
 src/**/*.d.ts.map
+
+# Personal editor and agent state, never part of the package.
+.idea/
+.vscode/
+.claude/

@@ -50,25 +50,54 @@ function capture(command, args) {
 
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
-async function waitForPublishedGitHead(packageVersion, expectedHead) {
+/** The registry the package is read back from, as npm resolves it. */
+function registryUrl() {
+  const configured = capture('npm', ['config', 'get', 'registry'])
+  if (!/^https?:\/\//u.test(configured)) throw new Error(`npm registry is not an http(s) URL: ${configured || '(empty)'}`)
+  return configured.endsWith('/') ? configured : `${configured}/`
+}
+
+/** The commit npm recorded for one version, read from that version's own
+ *  document: `undefined` while the registry has no such version, `null` for
+ *  a version whose metadata carries no gitHead.
+ *
+ *  Not `npm view`: that reads the whole packument, which the registry's CDN
+ *  caches for five minutes, and the queries this script makes before
+ *  publishing prime that cache with the pre-publish document -- so the
+ *  version that was just published stays "not found" for up to the whole
+ *  TTL. The per-version document is served uncached. The package is public,
+ *  so no credentials are sent. */
+async function fetchPublishedGitHead(registry, name, version) {
+  const url = new URL(`${name.replace('/', '%2F')}/${version}`, registry)
+  const response = await fetch(url, { cache: 'no-store', headers: { accept: 'application/json' } })
+  if (response.status === 404) return undefined
+  if (!response.ok) throw new Error(`${url} answered HTTP ${response.status}`)
+  const document = await response.json()
+  return typeof document?.gitHead === 'string' ? document.gitHead : null
+}
+
+async function waitForPublishedGitHead(name, version, expectedHead) {
+  const registry = registryUrl()
   const attempts = 61
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const result = run('npm', ['view', packageVersion, 'gitHead', '--json'], {
-      capture: true,
-      allowFailure: true,
-    })
-    if (result.status === 0) {
-      const publishedHead = JSON.parse(result.stdout.trim())
+    let publishedHead
+    let reason = 'npm metadata is not visible yet'
+    try {
+      publishedHead = await fetchPublishedGitHead(registry, name, version)
+    } catch (error) {
+      // A registry that could not be reached is asked again, not trusted.
+      reason = error instanceof Error ? error.message : String(error)
+    }
+    if (publishedHead !== undefined) {
       if (publishedHead !== expectedHead) {
         throw new Error(`npm published gitHead ${publishedHead ?? 'unknown'} does not match ${expectedHead}`)
       }
       return
     }
     if (attempt === attempts) {
-      process.stderr.write(result.stderr)
-      throw new Error(`${packageVersion} was published but did not become readable from npm within 5 minutes`)
+      throw new Error(`${name}@${version} was published but did not become readable from ${registry} within 5 minutes`)
     }
-    console.log(`npm metadata is not visible yet; retrying in 5 seconds (${attempt}/${attempts})...`)
+    console.log(`${reason}; retrying in 5 seconds (${attempt}/${attempts})...`)
     await sleep(5_000)
   }
 }
@@ -192,7 +221,7 @@ if (dryRun) {
 
 if (!alreadyPublished) {
   run('npm', ['publish', '--access', 'public'])
-  await waitForPublishedGitHead(`${packageName}@${version}`, head)
+  await waitForPublishedGitHead(packageName, version, head)
 }
 
 if (!releaseExists) {

@@ -190,7 +190,7 @@ export function ClaudePromptSaveAction({
         <div ref={panelRef} style={{ ...styles.promptSaveCard, ...position }} role="dialog" aria-label={label}>
           {panel.kind === 'saved' ? (
             <>
-              <span>{t('promptSaved', { name: panel.prompt.name })}</span>
+              <span style={styles.promptSaveHeading}>{t('promptSaved', { name: panel.prompt.name })}</span>
               <span style={styles.promptSaveLocation}>{panel.prompt.location}</span>
               <span style={styles.promptSaveActions}>
                 <Button variant="primary" size="sm" onClick={close}>{t('promptSaveDone')}</Button>
@@ -198,7 +198,8 @@ export function ClaudePromptSaveAction({
             </>
           ) : (
             <form style={{ display: 'contents' }} onSubmit={(event) => { event.preventDefault(); save() }}>
-              <span style={styles.promptSaveHeading}>{panel.suggesting ? t('promptSaveNaming') : label}</span>
+              <span style={styles.promptSaveHeading}>{label}</span>
+              {panel.suggesting ? <span role="status" style={styles.repositoryChecksHint}>{t('promptSaveNaming')}</span> : null}
               <input
                 className={styles.promptSaveFieldClass}
                 aria-label={t('promptSaveName')}

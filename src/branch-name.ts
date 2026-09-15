@@ -5,7 +5,6 @@
  *  a throwaway Haiku turn compresses it into a slug. Naming is a nicety: every
  *  failure here returns `undefined` and the caller keeps its timestamped name. */
 import { query as claudeQuery, type Options as ClaudeOptions, type Query } from '@anthropic-ai/claude-agent-sdk'
-import { isCliFailureReply } from './cli-reply.ts'
 
 /** Cheapest model that can translate and compress a sentence. */
 export const BRANCH_SUMMARY_MODEL = 'haiku'
@@ -38,9 +37,6 @@ export function branchSummaryPrompt(intent: string): string {
 export function branchSlug(reply: string): string | undefined {
   const line = reply.trim()
   if (line.length === 0 || line.length > MAX_REPLY_CHARS || /[\r\n]/u.test(line)) return undefined
-  // An auth failure is short and hyphenates into exactly six words, so it would
-  // otherwise pass every guard below and name the branch after it.
-  if (isCliFailureReply(line)) return undefined
   const words = line.toLocaleLowerCase('en-US')
     .replace(/[^a-z0-9]+/gu, '-')
     .split('-')
@@ -66,9 +62,8 @@ export function uniqueBranchName(candidate: string, taken: readonly string[]): s
 /** Compress a composer draft into a branch slug with a throwaway Claude turn.
  *
  *  Deliberately NOT routed through the supervisor, for the same reasons as the
- *  plan-usage probe: there is no session to borrow yet. The turn is isolated
- *  from filesystem settings as well, because a CLAUDE.md instruction ("always
- *  reply in the user's language") turns the answer into an unusable slug. */
+ *  plan-usage probe: there is no session to borrow yet. Settings sources match
+ *  conversation turns so the CLI can resolve settings-based authentication. */
 export async function summarizeBranchSlug(
   executablePath: string,
   intent: string,
@@ -87,16 +82,13 @@ export async function summarizeBranchSlug(
         abortController: lifetime,
         model: BRANCH_SUMMARY_MODEL,
         allowedTools: [],
-        // User settings only: the CLI's credential lives there, while a project
-        // CLAUDE.md ("reply in the user's language") would turn the answer into
-        // an unusable slug.
-        settingSources: ['user'],
+        settingSources: ['user', 'project', 'local'],
         maxTurns: 1,
         ...(executablePath.length === 0 ? {} : { pathToClaudeCodeExecutable: executablePath }),
       },
     })
     for await (const message of query) {
-      if (message.type === 'result' && message.subtype === 'success') return branchSlug(message.result)
+      if (message.type === 'result' && message.subtype === 'success' && message.is_error !== true) return branchSlug(message.result)
     }
     return undefined
   } catch {

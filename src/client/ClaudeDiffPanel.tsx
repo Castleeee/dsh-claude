@@ -17,7 +17,7 @@ import { branchLabel, repositoryLabel } from './branch-label.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { ClaudeClientProjection } from './projection.ts'
 import { useActionToast } from './action-toast.tsx'
-import { executeRepositoryAction, generateCommitMessage, loadRepositoryActionPreview } from './repository-action-api.ts'
+import { executeRepositoryAction, generateCommitMessage, generatePullRequestText, loadRepositoryActionPreview } from './repository-action-api.ts'
 import {
   composeCommentsPrompt,
   loadMentionableUsers,
@@ -392,7 +392,7 @@ function DiffFileSection({
   const dragSide = drag === undefined ? undefined : anchors[drag.start]?.side
   return (
     <section style={styles.diffFile}>
-      <button type="button" style={styles.diffFileHeader} aria-expanded={open} onClick={() => onOpenChange(!open)}>
+      <button type="button" className={styles.diffFileHeaderClass} style={styles.diffFileHeader} aria-expanded={open} onClick={() => onOpenChange(!open)}>
         <span data-diff-file-chevron="" style={{ ...styles.diffFileChevron, ...(open ? styles.chevronOpen : {}) }} aria-hidden="true">
           <IconChevronRightOutline14 size={14} />
         </span>
@@ -652,13 +652,24 @@ export function ClaudeDiffPanel({ useClaudeProjection, t, sessionId, closeDetail
         return
       }
       setDialog({ action, preview, loading: true, submitting: false })
-      const generated = await generateCommitMessage(sessionId, preview.fingerprint, controller.signal, root)
-      // The dialog is usable while the message is being written, so the
+      // The dialog is usable while the text is being written, so the
       // generated text only fills fields nobody has typed into, and lands on
       // whatever state the dialog reached in the meantime.
-      setMessage(current => (current.trim() === '' ? generated : current))
-      setPrTitle(current => (current.trim() === '' ? generated : current))
-      setPrBody(current => (current.trim() === '' ? `Summary: ${generated}\n\nChanges:\n- ${generated}` : current))
+      if (action === 'create-pr') {
+        // The pull request is described from the branch, not the tree: its
+        // commits and diff against the base, plus what the commit before it
+        // will add. The commit message covers the tree alone, when there is one.
+        const [pullRequest, generated] = await Promise.all([
+          generatePullRequestText(sessionId, preview.fingerprint, undefined, controller.signal, root),
+          preview.files.length > 0 ? generateCommitMessage(sessionId, preview.fingerprint, controller.signal, root) : Promise.resolve(undefined),
+        ])
+        setMessage(current => (current.trim() === '' ? generated ?? pullRequest.title : current))
+        setPrTitle(current => (current.trim() === '' ? pullRequest.title : current))
+        setPrBody(current => (current.trim() === '' ? pullRequest.body : current))
+      } else {
+        const generated = await generateCommitMessage(sessionId, preview.fingerprint, controller.signal, root)
+        setMessage(current => (current.trim() === '' ? generated : current))
+      }
       setDialog(current => (current === undefined ? current : { ...current, loading: false }))
     }).catch(error => {
       if (!controller.signal.aborted) setDialog({ action, loading: false, submitting: false, error: error instanceof Error ? error.message : t('diffActionFailed') })
@@ -927,33 +938,42 @@ export function ClaudeDiffPanel({ useClaudeProjection, t, sessionId, closeDetail
           ))}
         </div>
       </div>
-      <Modal className="dshClaudeRepositoryActionModal" contentClassName="dshClaudeRepositoryActionModalContent" open={dialog !== undefined} onClose={closeDialog} title={dialog === undefined ? t('diffCommit') : actionLabel(dialog.action, t)} closeLabel={t('diffCancel')} description={t('diffConfirmDescription')} footer={
+      <Modal className="dshClaudeRepositoryActionModal dshClaudeCommitDialog" contentClassName="dshClaudeRepositoryActionModalContent dshClaudeCommitContent" open={dialog !== undefined} onClose={closeDialog} title={dialog === undefined ? t('diffCommit') : actionLabel(dialog.action, t)} closeLabel={t('diffCancel')} footer={
         <div style={styles.diffModalFooter}>
           <button type="button" style={{ ...styles.button, ...styles.diffModalButton }} disabled={dialog?.submitting === true} onClick={closeDialog}>{t('diffCancel')}</button>
-          <button type="button" style={{ ...styles.primaryButton, ...styles.diffModalButton }} disabled={dialog?.submitting === true || dialog?.preview === undefined || (dialog.action !== 'push' && message.trim() === '')} onClick={() => void confirm()}>{dialog?.submitting === true ? t('diffSubmitting') : t('diffConfirm')}</button>
+          <button type="button" style={{ ...styles.primaryButton, ...styles.diffModalButton }} disabled={dialog?.submitting === true || dialog?.preview === undefined || (dialog.action !== 'push' && message.trim() === '')} onClick={() => void confirm()}>{dialog?.submitting === true ? t('diffSubmitting') : dialog === undefined ? t('diffCommit') : actionLabel(dialog.action, t)}</button>
         </div>
       }>
-        {dialog?.loading === true ? <p style={styles.diffModalStatus}>{t('diffGeneratingMessage')}</p> : null}
+        {dialog?.loading === true ? <p className="dshClaudeCommitProgress" role="status">{t(dialog.preview === undefined ? 'diffLoadingPreview' : 'diffGeneratingMessage')}</p> : null}
         {dialog?.preview !== undefined ? <div style={styles.diffModalBody}>
-          <div style={styles.diffModalMeta}><strong style={styles.diffModalMetaText} title={dialog.preview.branch}>{dialog.action === 'push'
-            ? `${dialog.preview.branch} → ${dialog.preview.upstream ?? `origin/${dialog.preview.branch}`}`
-            : dialog.preview.branch}</strong><span style={styles.diffModalFileState}>{dialog.action === 'push'
-            ? t('diffPushAhead', { count: dialog.preview.unpushedTruncated ? `${dialog.preview.unpushedCommits.length}+` : dialog.preview.unpushedCommits.length })
-            : t('diffFiles', { count: dialog.preview.files.length })}</span></div>
+          <div className="dshClaudeCommitContext">
+            <strong title={dialog.preview.root}>{repositoryLabel({ root: dialog.preview.root, cwd: dialog.preview.root })}</strong>
+            <span className="dshClaudeCommitBranch">{dialog.preview.branch}</span>
+            {dialog.action === 'push' || dialog.action === 'commit-push' ? <><span aria-hidden="true">→</span><span className="dshClaudeCommitBranch">{dialog.preview.upstream ?? `origin/${dialog.preview.branch}`}</span></> : null}
+          </div>
           {dialog.action === 'push' ? <>
-            <div style={styles.diffModalFiles}>{dialog.preview.unpushedCommits.map(commit => <div key={commit.hash} style={styles.diffModalFile}><span style={styles.diffModalFilePath} title={commit.subject}>{commit.subject}</span><span style={styles.diffModalFileState}>{commit.hash.slice(0, 8)}</span></div>)}</div>
+            <section className="dshClaudeCommitSection">
+              <h3>{t('diffPushAhead', { count: dialog.preview.unpushedTruncated ? `${dialog.preview.unpushedCommits.length}+` : dialog.preview.unpushedCommits.length })}</h3>
+              <div className="dshClaudeCommitFiles">{dialog.preview.unpushedCommits.map(commit => <div key={commit.hash} className="dshClaudeCommitFile"><code className="dshClaudeCommitHash">{commit.hash.slice(0, 8)}</code><span className="dshClaudeCommitPath" title={commit.subject}>{commit.subject}</span></div>)}</div>
+            </section>
             <p style={styles.diffModalStatus}>{t('diffPushDescription')}</p>
-          </> : <>
-            <div style={styles.diffModalFiles}>{dialog.preview.files.map(file => <div key={file.path} style={styles.diffModalFile}><span style={styles.diffModalFilePath} title={file.path}>{file.path}</span><span style={styles.diffModalFileState}>{file.untracked ? t('diffUntracked') : file.staged && file.unstaged ? t('diffStagedUnstaged') : file.staged ? t('diffStaged') : t('diffUnstaged')}</span></div>)}</div>
-            <label style={styles.diffModalCheckbox}><input type="checkbox" checked={includeUnstaged} disabled={!dialog.preview.hasUnstaged && !dialog.preview.hasUntracked} onChange={event => setIncludeUnstaged(event.currentTarget.checked)} />{t('diffIncludeUnstaged')}</label>
-            <label style={styles.diffModalField}>{t('diffCommitMessage')}<textarea style={styles.diffModalTextarea} value={message} maxLength={512} onChange={event => setMessage(event.currentTarget.value)} /></label>
-          </>}
-          {dialog.action === 'create-pr' ? <>
-            <label style={styles.diffModalField}>{t('diffPrTitle')}<input style={styles.diffModalTextInput} value={prTitle} maxLength={256} onChange={event => setPrTitle(event.currentTarget.value)} /></label>
-            <label style={styles.diffModalField}>{t('diffPrBase')}<input style={styles.diffModalTextInput} value={baseBranch} maxLength={512} placeholder={t('diffPrBaseDefault')} onChange={event => setBaseBranch(event.currentTarget.value)} /></label>
-            <label style={styles.diffModalField}>{t('diffPrDescription')}<textarea style={{ ...styles.diffModalTextarea, minHeight: 240 }} value={prBody} maxLength={8192} onChange={event => setPrBody(event.currentTarget.value)} /></label>
-            <label style={styles.diffModalCheckbox}><input type="checkbox" checked={draft} onChange={event => setDraft(event.currentTarget.checked)} />{t('diffPrDraft')}</label>
-          </> : null}
+          </> : <div className="dshClaudeCommitGrid">
+            <section className="dshClaudeCommitSection dshClaudeCommitChanges">
+              <h3>{t('diffFilesShort', { count: dialog.preview.files.length })}</h3>
+              <div className="dshClaudeCommitFiles">{dialog.preview.files.map(file => <div key={file.path} className="dshClaudeCommitFile"><span className="dshClaudeCommitPath" title={file.path}>{file.path}</span><span className="dshClaudeCommitState" data-staged={file.staged && !file.unstaged && !file.untracked}>{file.untracked ? t('diffUntracked') : file.staged && file.unstaged ? t('diffStagedUnstaged') : file.staged ? t('diffStaged') : t('diffUnstaged')}</span></div>)}</div>
+              <label style={styles.diffModalCheckbox}><input type="checkbox" checked={includeUnstaged} disabled={!dialog.preview.hasUnstaged && !dialog.preview.hasUntracked} onChange={event => setIncludeUnstaged(event.currentTarget.checked)} />{t('diffIncludeUnstaged')}</label>
+            </section>
+            <div className="dshClaudeCommitEditor">
+              {dialog.action === 'create-pr' ? <>
+                <label style={styles.diffModalField}>{t('diffPrTitle')}<input style={{ ...styles.diffModalTextInput, fontWeight: 400 }} value={prTitle} maxLength={256} onChange={event => setPrTitle(event.currentTarget.value)} /></label>
+                <label style={styles.diffModalField}>{t('diffPrBase')}<input style={{ ...styles.diffModalTextInput, fontWeight: 400 }} value={baseBranch} maxLength={512} placeholder={t('diffPrBaseDefault')} onChange={event => setBaseBranch(event.currentTarget.value)} /></label>
+                <label style={styles.diffModalField}>{t('diffPrDescription')}<textarea style={{ ...styles.diffModalTextarea, fontWeight: 400, minHeight: 180 }} value={prBody} maxLength={8192} onChange={event => setPrBody(event.currentTarget.value)} /></label>
+                <label style={styles.diffModalCheckbox}><input type="checkbox" checked={draft} onChange={event => setDraft(event.currentTarget.checked)} />{t('diffPrDraft')}</label>
+              </> : null}
+              <label style={styles.diffModalField}>{t('diffCommitMessage')}<textarea style={{ ...styles.diffModalTextarea, fontWeight: 400, minHeight: dialog.action === 'create-pr' ? 100 : 220 }} value={message} maxLength={2048} placeholder={t('diffCommitMessagePlaceholder')} onChange={event => setMessage(event.currentTarget.value)} /></label>
+              <p className="dshClaudeCommitHint">{t('diffCommitMessageHint')}</p>
+            </div>
+          </div>}
         </div> : null}
         {dialog?.error !== undefined ? <p role="alert" style={styles.diffModalError}>{dialog.error}{dialog.commit === undefined ? '' : ` ${t('diffCommitPreserved', { commit: dialog.commit.slice(0, 8) })}`}</p> : null}
       </Modal>

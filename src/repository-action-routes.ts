@@ -124,6 +124,11 @@ export function registerRepositoryActionRoute(
           const input = await readJson(io)
           return { status: 200, value: { message: await service.generateMessage(cwd, string(input, 'fingerprint')) } }
         }
+        if (url.pathname === `${CLAUDE_REPOSITORY_ACTION_PATH}/pull-request`) {
+          if (io.method !== 'POST') return { status: 405, value: { error: 'method not allowed' } }
+          const input = await readJson(io)
+          return { status: 200, value: await service.generatePullRequest(cwd, string(input, 'fingerprint'), optionalString(input, 'baseBranch')) }
+        }
         if (url.pathname === CLAUDE_REPOSITORY_ACTION_PATH) {
           if (io.method !== 'POST') return { status: 405, value: { error: 'method not allowed' } }
           return { status: 200, value: await service.execute(cwd, actionRequest(await readJson(io))) }

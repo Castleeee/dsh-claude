@@ -7,7 +7,7 @@
  *  are already on the activity log, so the extra roots are derived from there
  *  rather than tracked as new state. */
 import { stat } from 'node:fs/promises'
-import { dirname, isAbsolute, sep } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import type { ClaudeActivityEvent } from './events.ts'
 import type { RepositoryStatus } from './repository-status.ts'
 
@@ -156,6 +156,14 @@ async function isDirectory(path: string): Promise<boolean> {
 
 /** Repository roots behind the touched paths, minus the session's own, in
  *  first-seen order. `rootOf` answers undefined outside any repository. */
+/** Whether `child` lies strictly under `parent`. Compared with one separator:
+ *  on Windows git prints forward slashes where Node resolves to backslashes,
+ *  and a root can arrive in either form. */
+function isInside(child: string, parent: string): boolean {
+  const slashed = (value: string) => value.replaceAll('\\', '/').replace(/\/+$/u, '')
+  return slashed(child).startsWith(`${slashed(parent)}/`)
+}
+
 export async function touchedRepositoryRoots(
   paths: readonly string[],
   sessionRoot: string,
@@ -174,7 +182,7 @@ export async function touchedRepositoryRoots(
     // A repository the session checkout sits inside (a dotfiles home
     // directory, a monorepo the checkout is a nested clone in) is not
     // somewhere the session went; every path under it would drag it in.
-    if (sessionRoot.startsWith(root.endsWith(sep) ? root : root + sep)) continue
+    if (isInside(sessionRoot, root)) continue
     roots.push(root)
     if (roots.length >= max) break
   }

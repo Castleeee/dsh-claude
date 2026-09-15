@@ -2111,15 +2111,18 @@ export const repositoryChecksCard: CSSProperties = {
   zIndex: 1100,
   bottom: 'calc(100% + 8px)',
   right: 0,
-  width: 320,
+  width: 360,
+  maxWidth: 'calc(100vw - 32px)',
+  maxHeight: 'min(480px, calc(100dvh - 48px))',
+  overflowY: 'auto',
   boxSizing: 'border-box',
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'stretch',
-  gap: 8,
-  padding: 12,
+  gap: 12,
+  padding: 18,
   border: '1px solid var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 16%, transparent))',
-  borderRadius: 10,
+  borderRadius: 14,
   background: 'var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1))',
   boxShadow: 'var(--dsw-shadow-lv3)',
   textAlign: 'left',
@@ -2128,8 +2131,11 @@ export const repositoryChecksCard: CSSProperties = {
 
 export const repositoryChecksTitle: CSSProperties = {
   color: 'var(--dsw-alias-label-primary)',
-  fontSize: 12,
+  fontSize: 14,
   fontWeight: 650,
+  lineHeight: '22px',
+  paddingBottom: 10,
+  borderBottom: '1px solid var(--dsw-alias-border-l2)',
 }
 
 export const repositoryChecksHint: CSSProperties = {
@@ -2145,8 +2151,11 @@ export const repositoryChecksError: CSSProperties = {
 export const repositoryChecksItem: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 2,
+  gap: 5,
   minWidth: 0,
+  padding: '10px 12px',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-layer-2)',
 }
 
 export const repositoryChecksName: CSSProperties = {
@@ -2161,15 +2170,14 @@ export const repositoryChecksName: CSSProperties = {
 export const repositoryChecksDesc: CSSProperties = {
   color: 'var(--dsw-alias-label-tertiary)',
   fontSize: 11,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  lineHeight: '18px',
+  overflowWrap: 'anywhere',
 }
 
 export const repositoryChecksFix: CSSProperties = {
   alignSelf: 'flex-end',
-  minHeight: 26,
-  padding: '3px 10px',
+  minHeight: 32,
+  padding: '6px 12px',
   border: 'none',
   borderRadius: 7,
   background: 'var(--dsw-static-blue-450)',
@@ -2466,10 +2474,11 @@ export const askPopup: CSSProperties = {
   boxSizing: 'border-box',
   display: 'flex',
   flexDirection: 'column',
-  gap: 10,
-  padding: 12,
+  gap: 14,
+  padding: 18,
+  overflowY: 'auto',
   border: askSurfaceBorder,
-  borderRadius: 12,
+  borderRadius: 14,
   background: 'var(--dsw-alias-bg-layer-1)',
   color: 'var(--dsw-alias-label-primary)',
   boxShadow: askSurfaceShadow,
@@ -2483,7 +2492,7 @@ export const askQuote: CSSProperties = {
   WebkitLineClamp: 3,
   WebkitBoxOrient: 'vertical',
   margin: 0,
-  padding: '6px 10px',
+  padding: '10px 12px',
   overflow: 'hidden',
   borderLeft: '3px solid color-mix(in srgb, var(--dsw-static-blue-450) 60%, transparent)',
   borderRadius: 6,
@@ -2506,7 +2515,8 @@ export const askQuestion: CSSProperties = {
 
 export const askTextarea: CSSProperties = {
   width: '100%',
-  minHeight: 64,
+  minHeight: 88,
+  flexShrink: 0,
   boxSizing: 'border-box',
   padding: '8px 10px',
   border: askSurfaceBorder,
@@ -2525,7 +2535,10 @@ export const askActions: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'flex-end',
-  gap: 6,
+  gap: 8,
+  flexWrap: 'wrap',
+  paddingTop: 12,
+  borderTop: '1px solid var(--dsw-alias-border-l2)',
 }
 
 export const askAnswer: CSSProperties = {
@@ -2537,8 +2550,8 @@ export const askAnswer: CSSProperties = {
 }
 
 export const askButton: CSSProperties = {
-  minHeight: 26,
-  padding: '3px 10px',
+  minHeight: 32,
+  padding: '6px 12px',
   border: askSurfaceBorder,
   borderRadius: 7,
   outline: 'none',
@@ -3096,8 +3109,8 @@ export const promptSaveTriggerCss = `
 .${promptSaveFieldClass} {
   box-sizing: border-box;
   width: 100%;
-  height: 30px;
-  padding: 0 9px;
+  height: 38px;
+  padding: 0 11px;
   border: 1px solid var(--dsw-alias-border-inverted);
   border-radius: 7px;
   background: var(--dsw-alias-interactive-bg-hover);
@@ -3136,15 +3149,17 @@ export const promptSaveCard: CSSProperties = {
   boxSizing: 'border-box',
   display: 'flex',
   flexDirection: 'column',
-  gap: 8,
-  width: 340,
+  gap: 14,
+  width: 360,
   maxWidth: 'calc(100vw - 32px)',
-  padding: '10px 12px',
+  maxHeight: 'calc(100dvh - 32px)',
+  overflowY: 'auto',
+  padding: 18,
   // The same popup surface the session menu uses: --dsw-alias-border-l2 falls
   // back to a mix of currentColor, which on this dark card reads as a white
   // hairline rather than an edge.
   border: '1px solid var(--dsw-alias-border-inverted)',
-  borderRadius: 11,
+  borderRadius: 14,
   background: 'var(--dsw-specific-menu)',
   boxShadow: 'var(--dsw-shadow-lv3)',
   color: 'var(--dsw-alias-label-primary)',
@@ -3153,15 +3168,18 @@ export const promptSaveCard: CSSProperties = {
 }
 
 export const promptSaveHeading: CSSProperties = {
-  color: 'var(--dsw-alias-label-tertiary)',
-  fontSize: 11,
-  lineHeight: '16px',
+  color: 'var(--dsw-alias-label-primary)',
+  fontSize: 14,
+  fontWeight: 600,
+  lineHeight: '22px',
 }
 
 export const promptSaveActions: CSSProperties = {
   display: 'flex',
   justifyContent: 'flex-end',
-  gap: 6,
+  gap: 8,
+  paddingTop: 12,
+  borderTop: '1px solid var(--dsw-alias-border-l2)',
 }
 
 /** The saved file, wrapped rather than truncated: a path the user cannot read
@@ -3171,6 +3189,9 @@ export const promptSaveLocation: CSSProperties = {
   fontSize: 11,
   lineHeight: '16px',
   overflowWrap: 'anywhere',
+  padding: '10px 12px',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-layer-2)',
 }
 
 export const promptSaveError: CSSProperties = {
@@ -3275,6 +3296,7 @@ export const diffCommitMenuButton: CSSProperties = {
 }
 
 export const diffRepositoryTriggerClass = 'dshClaudeDiffRepositoryTrigger'
+export const diffFileHeaderClass = 'dshClaudeDiffFileHeader'
 
 /** The checkout switch: a quiet pill in the header's own type, lit on hover
  *  and while its menu is open, with the chevron set off in a lighter tone. */
@@ -3309,6 +3331,15 @@ export const diffRepositoryCss = `
 .${diffRepositoryTriggerClass} > svg {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
+}
+/* Sticky headers each form a stacking context, so the host Tooltip bubble
+   (rendered inline, position: fixed) is painted under the next file's header.
+   Lift the hovered header above its siblings while the bubble can be open. */
+.${diffFileHeaderClass} {
+  z-index: 1;
+}
+.${diffFileHeaderClass}:hover {
+  z-index: 2;
 }
 `
 
@@ -3372,7 +3403,6 @@ export const diffFileHeader: CSSProperties = {
   // file's header pushes it out as that file scrolls up.
   position: 'sticky',
   top: 0,
-  zIndex: 1,
   width: '100%',
   minHeight: 38,
   display: 'flex',
@@ -3642,6 +3672,107 @@ export const diffModalCss = `
 .dshClaudeRepositoryActionModal input:not([type='checkbox'], [type='radio']):focus {
   outline: none;
   box-shadow: inset 0 0 0 1px var(--dsw-static-blue-450);
+}
+.dshClaudeUtilityDialog {
+  width: min(580px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+}
+.dshClaudeUtilityContent { box-sizing: border-box; padding: 24px; }
+.dshClaudeUtilityContent > div:first-child { padding: 0 0 12px; }
+.dshClaudeUtilityContent h2 { font-size: 19px; line-height: 28px; letter-spacing: -.3px; }
+.dshClaudeUtilityContent > p { padding: 0; margin: 0 0 20px; color: var(--dsw-alias-label-secondary); }
+.dshClaudeUtilityContent > div:last-child:not(:first-child) { padding: 0; margin-top: 0; }
+.dshClaudeUtilityDialog > div:last-child:not(.dshClaudeUtilityContent) { padding: 16px 24px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeUtilitySummary {
+  padding: 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.dshClaudeUtilitySummary > strong { color: var(--dsw-alias-label-primary); }
+.dshClaudeUtilitySummary > span { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.dshClaudeUtilityOption {
+  padding: 13px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.dshClaudeUtilityOption input { flex-shrink: 0; }
+.dshClaudeUtilityOption:has(input:checked) { border-color: color-mix(in srgb, var(--dsw-static-blue-450) 45%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsw-static-blue-450) 5%, transparent); }
+.dshClaudeUtilityOption:has(input:disabled) { cursor: default; }
+.dshClaudeUtilityContent ul { max-height: 240px; overflow-y: auto; }
+.dshClaudeUtilityContent li { padding: 8px 4px; overflow-wrap: anywhere; }
+.dshClaudeUtilityContent li + li { border-top: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeUtilityContent [role='alert'] { padding: 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-1); overflow-wrap: anywhere; }
+.dshClaudeUtilityDialog button:focus-visible { outline: 2px solid var(--dsw-static-blue-450); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .dshClaudeUtilityContent { padding: 18px; }
+  .dshClaudeUtilityDialog > div:last-child:not(.dshClaudeUtilityContent) { padding: 14px 18px; }
+}
+.dshClaudeCommitDialog {
+  gap: 0;
+  padding: 0;
+  width: min(880px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.dshClaudeCommitContent { padding: 24px; box-sizing: border-box; }
+.dshClaudeCommitContent > div:first-child { padding: 0 0 16px; }
+.dshClaudeCommitContent > div:last-child:not(:first-child) { padding: 0; margin-top: 0; }
+.dshClaudeCommitContent h2 { font-size: 19px; line-height: 28px; letter-spacing: -.3px; }
+.dshClaudeCommitContext {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.dshClaudeCommitContext strong { color: var(--dsw-alias-label-primary); margin-right: 4px; }
+.dshClaudeCommitBranch {
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-1);
+  font-family: ui-monospace, monospace;
+}
+.dshClaudeCommitGrid { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 24px; }
+.dshClaudeCommitSection, .dshClaudeCommitEditor { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.dshClaudeCommitSection h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.dshClaudeCommitChanges { padding-right: 24px; border-right: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeCommitFiles { max-height: 320px; overflow-y: auto; min-width: 0; }
+.dshClaudeCommitFile { display: flex; align-items: center; gap: 10px; padding: 11px 0; font-size: 12px; line-height: 18px; }
+.dshClaudeCommitFile + .dshClaudeCommitFile { border-top: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeCommitPath { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dshClaudeCommitState { flex: none; max-width: 45%; padding: 2px 6px; border-radius: 4px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 10px; line-height: 16px; }
+.dshClaudeCommitState[data-staged='true'] { color: var(--dsw-static-green-450, var(--dsw-alias-label-primary)); }
+.dshClaudeCommitHash { flex: none; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.dshClaudeCommitEditor textarea, .dshClaudeCommitEditor input { border-radius: 8px; }
+.dshClaudeCommitEditor textarea { width: 100%; box-sizing: border-box; }
+.dshClaudeCommitHint { margin: -6px 0 0; color: var(--dsw-alias-label-secondary); font-size: 11px; line-height: 18px; }
+.dshClaudeCommitProgress { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+.dshClaudeCommitDialog > div:last-child:not(.dshClaudeCommitContent) { padding: 16px 24px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.dshClaudeCommitDialog button:focus-visible { outline: 2px solid var(--dsw-static-blue-450); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .dshClaudeCommitContent { padding: 18px; }
+  .dshClaudeCommitGrid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .dshClaudeCommitChanges { padding: 0 0 18px; border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+  .dshClaudeCommitFiles { max-height: 180px; }
+  .dshClaudeCommitDialog > div:last-child:not(.dshClaudeCommitContent) { padding: 14px 18px; }
 }
 `
 

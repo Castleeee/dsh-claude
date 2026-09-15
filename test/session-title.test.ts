@@ -26,16 +26,6 @@ describe('sessionTitleLine', () => {
     expect(sessionTitleLine('\n\nSplit the receivable ticket\nHope that helps!')).toBe('Split the receivable ticket')
     expect(sessionTitleLine('   \n  ')).toBe('')
   })
-
-  it('refuses the CLI telling us it never ran, so the fallback title stands', () => {
-    // The CLI answers an auth failure as a *successful* result whose text is the
-    // error, and that text once became a session's name.
-    expect(sessionTitleLine('Not logged in · Please run /login')).toBe('')
-    expect(sessionTitleLine('Invalid API key · Please run /login')).toBe('')
-    // A real title that merely mentions the same words is still a title the
-    // first non-empty line can carry — only the two failure shapes are refused.
-    expect(sessionTitleLine('修复插件认证问题')).toBe('修复插件认证问题')
-  })
 })
 
 describe('summarizeSessionTitle', () => {
@@ -48,13 +38,11 @@ describe('summarizeSessionTitle', () => {
     await expect(summarizeSessionTitle('/opt/claude', { system: SYSTEM, input: INPUT }, factory))
       .resolves.toBe('拆分 PSOS-5714 前后端工单')
     expect(params?.prompt).toBe(`${SYSTEM}\n\n${INPUT}`)
-    // A project CLAUDE.md aimed at the coding session would answer the wrong
-    // question, so this turn loads user settings only — and it has to load them,
-    // because the credential the CLI authenticates with lives there.
+    // Let the CLI resolve authentication from the same sources as conversation turns.
     expect(params?.options).toMatchObject({
       model: 'haiku',
       allowedTools: [],
-      settingSources: ['user'],
+      settingSources: ['user', 'project', 'local'],
       maxTurns: 1,
       pathToClaudeCodeExecutable: '/opt/claude',
     })
@@ -67,6 +55,13 @@ describe('summarizeSessionTitle', () => {
       .rejects.toThrow(/produced no title/)
     await expect(summarizeSessionTitle('', { input: '   ' }, () => fakeQuery(success('unused'))))
       .rejects.toThrow(/carried no text/)
+  })
+
+  it('rejects an auth error carried by a success result so DSH keeps its fallback', async () => {
+    await expect(summarizeSessionTitle('', { input: INPUT }, () => fakeQuery({
+      ...success('Not logged in · Please run /login'),
+      is_error: true,
+    }))).rejects.toThrow(/produced no title/)
   })
 
   it('aborts the throwaway turn when the title service supersedes it', async () => {

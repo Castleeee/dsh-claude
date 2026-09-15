@@ -83,6 +83,16 @@ describe('touched repository roots', () => {
     await expect(touchedRepositoryRoots(['/home/n/repo-a/vendor/lib/x.ts'], '/home/n/repo-a', nested, 8, async () => false)).resolves.toEqual(['/home/n/repo-a/vendor/lib'])
   })
 
+  it('recognises the containing repository whichever separator each side arrived with', async () => {
+    // Windows: git prints the toplevel with forward slashes, Node resolves the
+    // session cwd with backslashes, and both name the same directory.
+    const rootOf = async (directory: string): Promise<string | undefined> => (
+      directory.replaceAll('\\', '/').startsWith('C:/home/n/repo-a') ? 'C:/home/n/repo-a' : 'C:\\home\\n'
+    )
+    await expect(touchedRepositoryRoots(['C:\\home\\n\\.zshrc'], 'C:/home/n/repo-a', rootOf, 8, async () => false)).resolves.toEqual([])
+    await expect(touchedRepositoryRoots(['C:/home/n/.zshrc'], 'C:\\home\\n\\repo-a\\', rootOf, 8, async () => false)).resolves.toEqual([])
+  })
+
   it('probes a directory path itself, so a checkout named whole in a command resolves to its own root', async () => {
     const asked: string[] = []
     const rootOf = async (directory: string): Promise<string | undefined> => {

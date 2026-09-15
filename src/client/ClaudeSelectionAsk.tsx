@@ -331,6 +331,7 @@ export function ClaudeSelectionAsk({ t, currentSessionId, ownsSession, insertInt
   return (
     <div ref={popupRef} role="dialog" aria-label={t('askTooltip')} style={{ ...styles.askPopup, ...placement }}>
       <style data-dsh-claude-ask-styles>{styles.panelIconButtonCss}{styles.askHighlightCss}</style>
+      <strong style={styles.promptSaveHeading}>{t('askTooltip')}</strong>
       <p style={styles.askQuote}>{selection.text}</p>
       {phase === 'idle' ? (
         <>

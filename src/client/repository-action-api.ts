@@ -1,5 +1,6 @@
 import { CLAUDE_REPOSITORY_ACTION_PATH } from '../constants.ts'
 import type {
+  PullRequestText,
   RepositoryActionKind,
   RepositoryActionPreview,
   RepositoryActionRequest,
@@ -86,6 +87,21 @@ export async function generateCommitMessage(sessionId: string, fingerprint: stri
     }))
     if (typeof value?.message !== 'string') throw new Error('Invalid generated commit message.')
     return value.message
+  } catch (error) {
+    throw actionError(error)
+  }
+}
+
+/** Title and Summary/Changes body for the pull request the branch would open;
+ *  `baseBranch` empty means origin's default branch. */
+export async function generatePullRequestText(sessionId: string, fingerprint: string, baseBranch?: string, signal?: AbortSignal, root?: string): Promise<PullRequestText> {
+  try {
+    const value = record(await pluginWrite<unknown>(`${CLAUDE_REPOSITORY_ACTION_PATH}/pull-request`, 'remote', signal, {
+      query: sessionQuery(sessionId, root),
+      json: { fingerprint, ...(baseBranch === undefined || baseBranch.trim() === '' ? {} : { baseBranch: baseBranch.trim() }) },
+    }))
+    if (typeof value?.title !== 'string' || typeof value.body !== 'string') throw new Error('Invalid generated pull request text.')
+    return { title: value.title, body: value.body }
   } catch (error) {
     throw actionError(error)
   }

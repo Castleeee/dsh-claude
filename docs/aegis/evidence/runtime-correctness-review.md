@@ -1,5 +1,12 @@
 # Runtime Correctness Review
 
+> Historical record. Retained as evidence of the work at its recorded date;
+> package versions, file references, pending work, and verification results below
+> are not current status or instructions. For current behavior use the
+> [maintained architecture reference](../spec/2026-08-15-dsh-claude-spec.md) and the repository installation/upgrade guides.
+> Status clarified on 2026-09-14; the historical body is unchanged.
+
+
 Date: 2026-08-15  
 Scope: complete current working tree (`BASE_SHA: none`, `HEAD: WORKTREE`)  
 Review mode: advisory, findings first

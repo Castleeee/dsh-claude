@@ -406,7 +406,7 @@ export function ConflictControl({ sessionId, repository, root, t, report, submit
           ? t('conflictBadge', { operation: operationName, count: conflicts.length })
           : t('conflictBadgeReady', { operation: operationName })}</button>
       {dialog === undefined ? null : <style data-dsh-claude-repository-modal-styles>{styles.diffModalCss}</style>}
-      <Modal className="dshClaudeRepositoryActionModal" contentClassName="dshClaudeRepositoryActionModalContent" open={dialog !== undefined} onClose={closeDialog} title={t('conflictTitle')} closeLabel={t('diffCancel')} description={t('conflictDescription', { operation: operationName })} footer={
+      <Modal className="dshClaudeRepositoryActionModal dshClaudeUtilityDialog" contentClassName="dshClaudeRepositoryActionModalContent dshClaudeUtilityContent" open={dialog !== undefined} onClose={closeDialog} title={t('conflictTitle')} closeLabel={t('diffCancel')} description={t('conflictDescription', { operation: operationName })} footer={
         <div style={styles.diffModalFooter}>
           <button
             type="button"
@@ -423,7 +423,7 @@ export function ConflictControl({ sessionId, repository, root, t, report, submit
         </div>
       }>
         {dialog === undefined ? null : <div style={styles.diffModalBody}>
-          <div style={styles.diffModalMeta}>
+          <div className="dshClaudeUtilitySummary" style={styles.diffModalMeta}>
             <strong style={styles.diffModalMetaText}>{operationName} · {branchLabel(repository, t)}</strong>
             <span style={styles.diffModalFileState}>{conflicts.length > 0 ? t('conflictFiles') : t('conflictReady')}</span>
           </div>
@@ -432,7 +432,7 @@ export function ConflictControl({ sessionId, repository, root, t, report, submit
             <button type="button" style={styles.diffModalConflictResolve} onClick={() => { submitPrompt(`${linkedPreamble(repository, root, t)}${composeConflictsPrompt(conflicts, operation, repository.pullRequest?.baseBranch)}`); closeDialog() }}>{t('conflictResolve')}</button>
           )}
           {repository.remote === undefined ? null : (
-            <label style={styles.diffModalCheckbox}>
+            <label className="dshClaudeUtilityOption" style={styles.diffModalCheckbox}>
               <input type="checkbox" checked={dialog.push} disabled={dialog.submitting} onChange={event => { const { checked } = event.currentTarget; setDialog(current => current === undefined ? current : { ...current, push: checked }) }} />
               {t('conflictPush')}
             </label>
@@ -526,19 +526,19 @@ export function UpdateBranchControl({ sessionId, repository, root, t, report, su
     <>
       <button type="button" style={styles.repositoryUpdateTrigger} aria-label={t('repositoryUpdateBranch')} title={`${t('diffUpdateBranchBehind', { base, count: behind })} · ${t('repositoryUpdateBranch')}`} onClick={openDialog}>↓{behind}</button>
       {dialog === undefined ? null : <style data-dsh-claude-repository-modal-styles>{styles.diffModalCss}</style>}
-      <Modal className="dshClaudeRepositoryActionModal" contentClassName="dshClaudeRepositoryActionModalContent" open={dialog !== undefined} onClose={closeDialog} title={t('repositoryUpdateBranch')} closeLabel={t('diffCancel')} description={t('diffUpdateBranchDescription', { base })} footer={
+      <Modal className="dshClaudeRepositoryActionModal dshClaudeUtilityDialog" contentClassName="dshClaudeRepositoryActionModalContent dshClaudeUtilityContent" open={dialog !== undefined} onClose={closeDialog} title={t('repositoryUpdateBranch')} closeLabel={t('diffCancel')} description={t('diffUpdateBranchDescription', { base })} footer={
         <div style={styles.diffModalFooter}>
           <button type="button" style={{ ...styles.button, ...styles.diffModalButton }} disabled={dialog?.submitting === true} onClick={closeDialog}>{settled ? t('diffDone') : t('diffCancel')}</button>
           {!settled ? <button type="button" style={{ ...styles.primaryButton, ...styles.diffModalButton }} disabled={dialog?.loading === true || dialog?.submitting === true || dialog?.fingerprint === undefined} onClick={confirmUpdate}>{dialog?.submitting === true ? t('diffSubmitting') : t('diffConfirm')}</button> : null}
         </div>
       }>
         {dialog === undefined ? null : <div style={styles.diffModalBody}>
-          <div style={styles.diffModalMeta}>
+          <div className="dshClaudeUtilitySummary" style={styles.diffModalMeta}>
             <strong style={styles.diffModalMetaText} title={pullRequest.title}>{repository.branch ?? t('repositoryUnknownBranch')} ← origin/{base}</strong>
             <span style={styles.diffModalFileState}>{t('diffUpdateBranchBehind', { base, count: behind })}</span>
           </div>
           {(['rebase', 'merge'] as const).map(option => (
-            <label key={option} style={styles.diffModalCheckbox}>
+            <label key={option} className="dshClaudeUtilityOption" style={styles.diffModalCheckbox}>
               <input type="radio" name="dsh-claude-update-branch-method" value={option} checked={method === option} disabled={settled || dialog.submitting} onChange={() => setMethod(option)} />
               {t(`diffUpdateBranch_${option}`, { base })}
             </label>
@@ -599,14 +599,14 @@ export function CleanupControl({ repository, t, report, deleteWorkspace }: {
     <>
       <button type="button" style={styles.repositoryUpdateTrigger} title={t('cleanupTitle')} onClick={() => { setDialog({ submitting: false }) }}>{t('cleanupButton')}</button>
       {dialog === undefined ? null : <style data-dsh-claude-repository-modal-styles>{styles.diffModalCss}</style>}
-      <Modal className="dshClaudeRepositoryActionModal" contentClassName="dshClaudeRepositoryActionModalContent" open={dialog !== undefined} onClose={closeDialog} title={t('cleanupTitle')} closeLabel={t('diffCancel')} description={t(unmerged ? 'cleanupDescriptionUnmerged' : 'cleanupDescription')} footer={
+      <Modal className="dshClaudeRepositoryActionModal dshClaudeUtilityDialog" contentClassName="dshClaudeRepositoryActionModalContent dshClaudeUtilityContent" open={dialog !== undefined} onClose={closeDialog} title={t('cleanupTitle')} closeLabel={t('diffCancel')} description={t(unmerged ? 'cleanupDescriptionUnmerged' : 'cleanupDescription')} footer={
         <div style={styles.diffModalFooter}>
           <button type="button" style={{ ...styles.button, ...styles.diffModalButton }} disabled={dialog?.submitting === true} onClick={closeDialog}>{t('diffCancel')}</button>
           <button type="button" style={{ ...styles.primaryButton, ...styles.diffModalButton }} disabled={dialog?.submitting === true} onClick={confirm}>{dialog?.submitting === true ? t('diffSubmitting') : t('diffConfirm')}</button>
         </div>
       }>
         {dialog === undefined ? null : <div style={styles.diffModalBody}>
-          <div style={styles.diffModalMeta}>
+          <div className="dshClaudeUtilitySummary" style={styles.diffModalMeta}>
             <strong style={styles.diffModalMetaText}>{repository.branch ?? t('repositoryUnknownBranch')}{base === undefined ? '' : ` → ${base}`}</strong>
             <span style={styles.diffModalFileState}>{repository.worktree === true ? t('repositoryWorktree') : t('repositoryLocal')}</span>
           </div>
@@ -688,19 +688,19 @@ export function MergePullRequestControl({ sessionId, repository, root, t, report
         <button type="button" style={styles.repositoryMergeTrigger} aria-label={t('repositoryMergeMenu')} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>{t('diffMergePr')}<IconChevronDownOutline14 /></button>
       } />
       {dialog === undefined ? null : <style data-dsh-claude-repository-modal-styles>{styles.diffModalCss}</style>}
-      <Modal className="dshClaudeRepositoryActionModal" contentClassName="dshClaudeRepositoryActionModalContent" open={dialog !== undefined} onClose={closeDialog} title={t('diffMergePr')} closeLabel={t('diffCancel')} description={t('diffMergeDescription')} footer={
+      <Modal className="dshClaudeRepositoryActionModal dshClaudeUtilityDialog" contentClassName="dshClaudeRepositoryActionModalContent dshClaudeUtilityContent" open={dialog !== undefined} onClose={closeDialog} title={t('diffMergePr')} closeLabel={t('diffCancel')} description={t('diffMergeDescription')} footer={
         <div style={styles.diffModalFooter}>
           <button type="button" style={{ ...styles.button, ...styles.diffModalButton }} disabled={dialog?.submitting === true} onClick={closeDialog}>{t('diffCancel')}</button>
           <button type="button" style={{ ...styles.primaryButton, ...styles.diffModalButton }} disabled={dialog?.loading === true || dialog?.submitting === true || dialog?.fingerprint === undefined} onClick={confirmMerge}>{dialog?.submitting === true ? t('diffSubmitting') : t('diffConfirm')}</button>
         </div>
       }>
         {dialog === undefined ? null : <div style={styles.diffModalBody}>
-          <div style={styles.diffModalMeta}>
+          <div className="dshClaudeUtilitySummary" style={styles.diffModalMeta}>
             <strong style={styles.diffModalMetaText} title={pullRequest.title}>{t('repositoryPr', { number: pullRequest.number })} → {pullRequest.baseBranch ?? t('diffPrBaseDefault')}</strong>
             <span style={styles.diffModalFileState}>{t(`diffMerge_${dialog.method}` as ClaudeCodeSettingsKey)}</span>
           </div>
           <p style={styles.diffModalStatus}>{pullRequest.title}</p>
-          <label style={styles.diffModalCheckbox}>
+          <label className="dshClaudeUtilityOption" style={styles.diffModalCheckbox}>
             <input type="checkbox" name="dsh-claude-merge-admin" checked={dialog.admin} disabled={dialog.submitting} onChange={event => { const { checked } = event.currentTarget; setDialog(current => current === undefined ? current : { ...current, admin: checked }) }} />
             {t('diffMergeAdmin')}
           </label>
