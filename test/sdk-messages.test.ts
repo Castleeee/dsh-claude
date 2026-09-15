@@ -157,7 +157,8 @@ describe('Claude SDK message normalization', () => {
   it('consumes tool-progress heartbeats as progress instead of activity', () => {
     // The CLI emits one of these while a tool runs. Like the thinking-token
     // frames they are telemetry no row renders, and the unknown-type fallback
-    // used to store every heartbeat as a warning.
+    // used to store every heartbeat as a warning. What they do carry — which
+    // tool, and how long it has been running — is the live state.
     expect(normalizeSdkMessage(sdk({
       type: 'tool_progress',
       tool_use_id: 'tool-1',
@@ -166,7 +167,17 @@ describe('Claude SDK message normalization', () => {
       elapsed_time_seconds: 12,
       uuid: 'uuid-2',
       session_id: 'session-1',
-    }))).toEqual([{ kind: 'progress', subtype: 'tool_progress' }])
+    }))).toEqual([{ kind: 'progress', subtype: 'tool_progress', toolName: 'Bash', elapsedMs: 12_000 }])
+    // A subagent's tool is not the turn's own work; the frame keeps its parent.
+    expect(normalizeSdkMessage(sdk({
+      type: 'tool_progress',
+      tool_use_id: 'tool-2',
+      tool_name: 'Read',
+      parent_tool_use_id: 'task-1',
+      elapsed_time_seconds: 1,
+      uuid: 'uuid-3',
+      session_id: 'session-1',
+    }))).toEqual([{ kind: 'progress', subtype: 'tool_progress', toolName: 'Read', elapsedMs: 1_000, parentToolUseId: 'task-1' }])
   })
 
   it('normalizes successful result usage', () => {

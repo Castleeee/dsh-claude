@@ -25,6 +25,7 @@ import {
   safeDetail,
   type ClaudeActivityCursor,
   type ClaudeActivityInput,
+  type ClaudeLiveProgress,
   type ClaudeTaskInfo,
   type ClaudeUsage,
 } from './events.ts'
@@ -46,6 +47,10 @@ export const CLAUDE_METADATA_TIMEOUT_MS = 15_000
 /** Bound on steered messages one turn may own, so a misbehaving caller cannot
  *  grow the ownership set without limit. */
 export const MAX_STEERED_PROMPTS_PER_TURN = 16
+/** How often a running tool's clock is republished while it stays the same
+ *  tool. A tool heartbeat arrives every few hundred milliseconds; a reader
+ *  cannot read faster than this, and each republish is a line on the wire. */
+export const LIVE_ELAPSED_INTERVAL_MS = 1_000
 
 /** What {@link ClaudeSupervisor.deliverSteering} did with one steered message. */
 export type ClaudeSteeringOutcome = 'delivered' | 'unavailable'
@@ -221,6 +226,10 @@ interface ActiveTurn {
    *  tool name a result carries none of. Emptied as results arrive, so what
    *  remains when a turn ends is exactly what never got an answer. */
   openCalls: Map<string, string>
+  /** Newest live state published for this turn, and when: the pair that keeps
+   *  a per-token progress stream from becoming a per-token delta stream. */
+  live: ClaudeLiveProgress | undefined
+  liveAt: number
   signal?: AbortSignal
   abortListener?: () => void
 }
@@ -764,6 +773,8 @@ export class ClaudeSupervisor {
       aborted: false,
       deniedToolUseIds: new Set(),
       openCalls: new Map(),
+      live: undefined,
+      liveAt: 0,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     }
     entry.active = active
@@ -1251,6 +1262,7 @@ export class ClaudeSupervisor {
     switch (message.kind) {
       case 'text-delta':
         if (message.parentToolUseId !== undefined) return
+        this.#setLive(active, { state: 'thinking' })
         active.sawTextDelta = true
         active.text += message.text
         active.transcriptText += message.text
@@ -1303,6 +1315,7 @@ export class ClaudeSupervisor {
           detail: message.input,
         })
         if (message.parentToolUseId === undefined) {
+          this.#setLive(active, { state: 'tool', label: message.toolName })
           active.openCalls.set(message.toolUseId, message.toolName)
           // Only root calls are mirrored: a subagent's nested tools belong to
           // the Task card that dispatched them, and the native channel has no
@@ -1314,6 +1327,7 @@ export class ClaudeSupervisor {
         }
         return
       case 'tool-result':
+        if (message.parentToolUseId === undefined) this.#setLive(active, { state: 'waiting' })
         active.openCalls.delete(message.toolUseId)
         await this.#appendActivity(active, {
           kind: message.parentToolUseId === undefined ? 'tool-result' : 'subagent',
@@ -1374,7 +1388,17 @@ export class ClaudeSupervisor {
         // separates an unknown outcome from a clean disconnect when the CLI dies
         // mid-turn. Nothing durable follows from it — the SDK emits these per
         // estimated thinking-token chunk, and every durable row would cost a
-        // full sidecar rewrite.
+        // full sidecar rewrite. What it does feed is the live state a reader
+        // watches: which tool is running, and for how long.
+        if (message.toolName !== undefined && message.parentToolUseId === undefined) {
+          this.#setLive(active, {
+            state: 'tool',
+            label: message.toolName,
+            ...(message.elapsedMs === undefined ? {} : { elapsedMs: message.elapsedMs }),
+          })
+        } else if (message.subtype === 'thinking_tokens') {
+          this.#setLive(active, { state: 'thinking' })
+        }
         return
       case 'unknown': {
         // The CLI grows message types steadily, and a new one arrives in batches
@@ -1718,6 +1742,8 @@ export class ClaudeSupervisor {
     result: Extract<NormalizedSdkMessage, { kind: 'result' }>,
   ): Promise<void> {
     if (entry.active !== active) return
+    // Whatever the turn was doing, it is not doing it any more.
+    this.#clearLive(active)
     if (active.aborted) {
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
@@ -1853,8 +1879,32 @@ export class ClaudeSupervisor {
     }
   }
 
-  async #upsertTranscriptText(active: ActiveTurn): Promise<void> {
-    if (active.transcriptText.length === 0) return
+  /** Publish what this turn is doing right now, once per actual change.
+   *
+   *  The CLI streams thinking estimates per token chunk and a tool heartbeat
+   *  every few hundred milliseconds; forwarding each one would rebuild the
+   *  flood the activity log was just cured of. Only a state change is news, and
+   *  the tool clock is news at most once a second — which is as often as a
+   *  reader can read it. */
+  #setLive(active: ActiveTurn, next: Omit<ClaudeLiveProgress, 'turn'>): void {
+    const now = Date.now()
+    const value: ClaudeLiveProgress = { turn: active.cursor.turn, ...next }
+    const previous = active.live
+    const changedState = previous?.state !== value.state || previous.label !== value.label
+    if (!changedState && now - active.liveAt < LIVE_ELAPSED_INTERVAL_MS) return
+    active.live = value
+    active.liveAt = now
+    this.#sidecar.notifyLive(active.agent.id as string, value)
+  }
+
+  /** Stop reporting a turn's state: the state it was reporting is over. */
+  #clearLive(active: ActiveTurn): void {
+    if (active.live === undefined) return
+    active.live = undefined
+    this.#sidecar.notifyLive(active.agent.id as string, undefined)
+  }
+
+  async #upsertTranscriptText(active: ActiveTurn): Promise<void> {    if (active.transcriptText.length === 0) return
     const ordinal = active.transcriptTextOrdinal ?? active.cursor.nextOrdinal++
     active.transcriptTextOrdinal = ordinal
     try {
@@ -2006,6 +2056,7 @@ export class ClaudeSupervisor {
     const active = entry.active
     const stderr = entry.process?.stderrTail()
     if (active !== undefined) {
+      this.#clearLive(active)
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
       if (active.signal !== undefined && active.abortListener !== undefined) {

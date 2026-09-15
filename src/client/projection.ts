@@ -1,5 +1,5 @@
 import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ClaudeActivityEvent, ClaudeContextUsageEvent, ClaudeTasksEvent } from '../events.ts'
+import { normalizeLiveProgress, type ClaudeActivityEvent, type ClaudeContextUsageEvent, type ClaudeLiveProgress, type ClaudeTasksEvent } from '../events.ts'
 import type { ClaudeCommandView } from '../command-bridge.ts'
 import type { RepositoryStatus } from '../repository-status.ts'
 import type { ReviewComment } from '../review-comments.ts'
@@ -16,6 +16,9 @@ export interface ClaudeClientProjection {
   readonly activities: readonly ClaudeActivityEvent[]
   readonly contextUsage?: ClaudeContextUsageEvent
   readonly tasks?: ClaudeTasksEvent
+  /** What the running turn is doing right now. Never persisted: it exists only
+   *  while a turn is running, and disappears with the turn it describes. */
+  readonly live?: ClaudeLiveProgress
   readonly repository?: RepositoryStatus
   /** Other checkouts the session wrote into, each with its own diff and PR. */
   readonly repositories?: readonly RepositoryStatus[]
@@ -167,6 +170,9 @@ export function parseClaudeClientProjection(value: unknown): ClaudeClientProject
   }
   const tasks = input.tasks === undefined ? undefined : record(input.tasks)
   if (tasks !== undefined && !Array.isArray(tasks.tasks)) throw new Error('invalid Claude tasks projection')
+  if (input.live !== undefined && normalizeLiveProgress(input.live) === undefined) {
+    throw new Error('invalid Claude live projection')
+  }
   if (input.repository !== undefined && !validateRepository(input.repository)) {
     throw new Error('invalid Claude repository projection')
   }
@@ -265,6 +271,7 @@ export function createClaudeProjectionSource(
   let commands: readonly ClaudeCommandView[] = []
   let contextUsage: ClaudeContextUsageEvent | undefined
   let tasks: ClaudeTasksEvent | undefined
+  let live: ClaudeLiveProgress | undefined
   let repository: RepositoryStatus | undefined
   let repositories: readonly RepositoryStatus[] | undefined
   let reviewComments: readonly ReviewComment[] | undefined
@@ -348,6 +355,7 @@ export function createClaudeProjectionSource(
       activities,
       ...(contextUsage === undefined ? {} : { contextUsage }),
       ...(tasks === undefined ? {} : { tasks }),
+      ...(live === undefined ? {} : { live }),
       ...(repository === undefined ? {} : { repository }),
       ...(repositories === undefined ? {} : { repositories }),
       ...(reviewComments === undefined ? {} : { reviewComments }),
@@ -466,6 +474,9 @@ export function createClaudeProjectionSource(
           commands = next.commands
           contextUsage = next.contextUsage
           tasks = next.tasks
+          // Live state is never in a snapshot: a reconnect mid-turn shows
+          // nothing until the running turn reports itself again.
+          live = undefined
           repository = next.repository
           repositories = next.repositories
           reviewComments = next.reviewComments
@@ -497,6 +508,17 @@ export function createClaudeProjectionSource(
         case 'tasks':
           validateEnvelopeFragment({ tasks: event.value })
           tasks = event.value as ClaudeTasksEvent
+          revision += 1
+          break
+        case 'live':
+          // A state, not evidence: it is replaced wholesale and never merged
+          // into the activity log. An absent value means the turn reported
+          // nothing to watch any more.
+          live = normalizeLiveProgress(event.value)
+          if (event.value !== undefined && live === undefined) {
+            if (seq !== undefined) desync('projection-delta-rejected', 'live not applied')
+            return
+          }
           revision += 1
           break
         case 'meta':
