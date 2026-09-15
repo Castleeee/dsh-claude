@@ -293,7 +293,11 @@ export function normalizeActivity(
 }
 
 const MAX_CONTEXT_CATEGORIES = 24
-const FALLBACK_CONTEXT_COLOR = '#8b95a5'
+/** What a category is colored with when the report does not say. This marks
+ *  "the CLI carried no color", which is not the same as a color it chose: the
+ *  renderer separates the categories it draws, and needs to know when the
+ *  report left that to it. */
+export const FALLBACK_CONTEXT_COLOR = '#8b95a5'
 const SAFE_CONTEXT_COLOR = /^#[0-9a-f]{3,8}$/iu
 
 function nonNegativeInteger(value: unknown): number {
