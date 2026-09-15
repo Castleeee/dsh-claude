@@ -228,6 +228,39 @@ describe('Claude sidecar conversation projection', () => {
     ])
   })
 
+  it('stops pulsing the asking row of a question that was answered', () => {
+    const asking: ClaudeActivityEvent = {
+      turn: 1,
+      step: 1,
+      ordinal: 0,
+      kind: 'question',
+      phase: 'started',
+      toolUseId: 'tool-1',
+      title: 'Claude asked a question',
+      summary: 'Which file?',
+    }
+    // Open: the row pulses, which is the state the reader has to act on.
+    expect(lifecycleRows([asking], 1, 1).map(row => row.running)).toEqual([true])
+
+    // The answer arrives as its own activity — that half is a row of its own on
+    // purpose — so the asking row has to be settled from the stream. Nothing
+    // else will ever re-describe it, and left running it pulses for the rest of
+    // the session on a question answered minutes ago.
+    const answered: ClaudeActivityEvent = {
+      ...asking,
+      ordinal: 1,
+      phase: 'completed',
+      summary: 'Answered in DeepSeek Harness · hello.md',
+    }
+    const rows = lifecycleRows([asking, answered], 1, 1)
+    expect(rows.map(row => row.running)).toEqual([false, false])
+    expect(rows.map(row => row.activity.phase)).toEqual(['completed', 'completed'])
+    expect(rows.map(row => row.activity.summary)).toEqual([
+      'Which file?',
+      'Answered in DeepSeek Harness · hello.md',
+    ])
+  })
+
   it('folds a task call, its nested subagent calls, and its result into one group entry', () => {
     const items = transcriptItemsForStep([taskCall, nestedStarted, nestedDone, taskDone], 2, 1)
     expect(items).toHaveLength(1)

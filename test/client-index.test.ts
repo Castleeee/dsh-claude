@@ -92,7 +92,7 @@ describe('Claude client slot registration', () => {
     expect(definitions).toHaveLength(3)
   })
 
-  it('stacks the dock as comments, queue dock, then repository status', () => {
+  it('keeps the repository bar out of the dock', () => {
     const registrations: Array<{ readonly name: string; readonly id?: string; readonly order?: number }> = []
     const dispose = (): void => {}
     const ctx = {
@@ -132,16 +132,20 @@ describe('Claude client slot registration', () => {
     apply(ctx as never)
 
     const reviewComments = registrations.find(entry => entry.id === 'claude-review-comments')
-    const repositoryStatus = registrations.find(entry => entry.id === 'claude-repository-status')
     expect(reviewComments).toBeDefined()
-    expect(repositoryStatus).toBeDefined()
-    // DSH's QueueDock owns order 20: comments sit above it, the status below.
+    // DSH's QueueDock owns order 20: comments sit above it.
     expect(reviewComments?.order).toBeLessThan(20)
-    expect(repositoryStatus?.order).toBeGreaterThan(20)
-    expect(repositoryStatus?.order).toBeLessThan(21)
+    // The permanent repository readout (id `claude-repository-status`, order
+    // 20.5) is deliberately unregistered: the branch it restated moved to the
+    // `dsh-my-patch` git chip, and away from a repository it said nothing while
+    // still taking a row. This assertion is what stops a merge from quietly
+    // bringing it back.
+    expect(registrations.some(entry => entry.id === 'claude-repository-status')).toBe(false)
+    expect(registrations.filter(entry => entry.name === 'conversation.input.dock').map(entry => entry.id))
+      .toEqual(['claude-review-comments'])
   })
 
-  it('archives a cleaned-up workspace\'s sessions before deleting it', async () => {
+  it('leaves the workspace-delete control unregistered with the bar it lived in', async () => {
     const calls: string[] = []
     const registrations: Array<{ readonly id?: string; readonly inject?: (...args: unknown[]) => unknown }> = []
     const dispose = (): void => {}
@@ -195,12 +199,12 @@ describe('Claude client slot registration', () => {
 
     apply(ctx as never)
 
-    const repositoryStatus = registrations.find(entry => entry.id === 'claude-repository-status')
-    const actions = repositoryStatus?.inject?.('session-1') as { deleteWorkspace(): Promise<void> }
-    await actions.deleteWorkspace()
-
-    // Without the archive hop the sessions survive into the unaccounted group.
-    expect(calls).toEqual(['archive:session-1', 'archive:session-2', 'delete:workspace-1'])
+    // "Archive every session, then delete the workspace" was reachable only
+    // through the bar's inject face. With the bar gone the control has no seat,
+    // so the behaviour it guarded is gone with it — nothing may still reach the
+    // workspace service during apply, and no registration may expose it.
+    expect(registrations.some(entry => entry.id === 'claude-repository-status')).toBe(false)
+    expect(calls).toEqual([])
   })
 
   it('opens each panel as a right-sidebar tab and closes it through that tab', () => {
@@ -272,10 +276,9 @@ describe('Claude client slot registration', () => {
       .toEqual(['claude-diff', 'claude-overview', 'claude-plan', 'claude-tasks'])
     expect(registrations.some(entry => entry.name === 'details')).toBe(false)
 
-    const repositoryStatus = registrations.find(entry => entry.id === 'claude-repository-status')
-    const repositoryActions = repositoryStatus?.inject?.('session-1') as { openDiff(root?: string): void }
-    repositoryActions.openDiff('K:/repo')
-    expect(opened.at(-1)).toEqual(['session-1', 'claude-diff', { params: { initialRoot: 'K:/repo' } }])
+    // The bar used to open the diff here; it is unregistered, so the Session
+    // header is the only diff trigger left and is exercised below.
+    expect(registrations.some(entry => entry.id === 'claude-repository-status')).toBe(false)
 
     // The header toggle closes the tab it opened, which it learns from the body.
     const diffBody = registrations.find(entry => entry.name === 'sidebar.right.pane.tab' && entry.key === 'claude-diff')

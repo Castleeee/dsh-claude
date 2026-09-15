@@ -6,6 +6,7 @@ import type { ClaudeClientProjection } from './projection.ts'
 import type { ClaudeTurnMarker } from './conversation-sidecar.ts'
 import { summarizeTurnTasks, tasksForTurn } from './ClaudeTasksPanel.tsx'
 import { ClaudeTurnUsage, formatTurnDuration } from './ClaudeActivityNode.tsx'
+import { ClaudeTurnChanges } from './ClaudeTurnChanges.tsx'
 import { latestTurnUsage } from './conversation-sidecar.ts'
 import * as styles from './styles.ts'
 
@@ -13,6 +14,12 @@ const MAX_HOVER_TASKS = 6
 const EMPTY_TASKS: readonly ClaudeTaskInfo[] = []
 
 export interface ClaudeActivityTailInjected {
+  /**
+   * The session whose turn this footer closes. Optional because the footer is
+   * also drawn where no rewind route is at hand; the changed-files card is the
+   * only part that needs it, and it is skipped when it is absent.
+   */
+  sessionId?: string
   t: (key: ClaudeCodeSettingsKey, params?: Record<string, unknown>) => string
   openTasks: (turn: number) => void
 }
@@ -142,8 +149,13 @@ export function ClaudeLivePill({ live, t }: { live: ClaudeLiveProgress; t: Claud
 }
 
 /** Everything that closes a turn, in the order it reads: what the turn is
- *  still doing, then what it cost. */
-export function ClaudeTurnFooter({ turn, useClaudeProjection, t, openTasks }: ClaudeTurnFooterProps) {
+ *  still doing, then what it cost, then the files it changed.
+ *
+ *  The changed-files card belongs to this tail rather than to the profile's
+ *  generic one: Claude's tool arguments reach the browser truncated, so the
+ *  only trustworthy account of what the turn touched comes from Claude Code's
+ *  own checkpointing — a route this plugin owns. */
+export function ClaudeTurnFooter({ turn, sessionId, useClaudeProjection, t, openTasks }: ClaudeTurnFooterProps) {
   const tasks = useClaudeProjection(value => value.tasks?.tasks ?? EMPTY_TASKS)
   const usage = useClaudeProjection(value => latestTurnUsage(value.activities, turn))
   // Only the turn the state names draws it: one live value serves the session,
@@ -154,10 +166,19 @@ export function ClaudeTurnFooter({ turn, useClaudeProjection, t, openTasks }: Cl
       {live === undefined ? null : <ClaudeLivePill live={live} t={t} />}
       <ClaudeTaskLauncher turn={turn} tasks={tasks} t={t} openTasks={openTasks} />
       {usage === undefined ? null : <ClaudeTurnUsage usage={usage} t={t} />}
+      {sessionId === undefined ? null : <ClaudeTurnChanges sessionId={sessionId} turn={turn} settled={live === undefined} />}
     </>
   )
 }
 
-export function ClaudeActivityTail({ matched, useClaudeProjection, t, openTasks }: ClaudeActivityTailProps) {
-  return <ClaudeTurnFooter turn={matched.turn} useClaudeProjection={useClaudeProjection} t={t} openTasks={openTasks} />
+export function ClaudeActivityTail({ matched, sessionId, useClaudeProjection, t, openTasks }: ClaudeActivityTailProps) {
+  return (
+    <ClaudeTurnFooter
+      turn={matched.turn}
+      useClaudeProjection={useClaudeProjection}
+      t={t}
+      openTasks={openTasks}
+      {...(sessionId === undefined ? {} : { sessionId })}
+    />
+  )
 }

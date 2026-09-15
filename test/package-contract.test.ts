@@ -129,8 +129,11 @@ describe('published package contract', () => {
     expect(client).toContain('createClaudeDiagnosticsReporter()')
     expect(client).toContain('claudeBootCheckFindings(')
     // The composer properties are scoped to the Host's composer subtree, so a
-    // probe on the document root reports them missing forever.
-    expect(client).toContain('watchClaudeComposerBar(')
+    // probe on the document root reports them missing forever. The probe that
+    // watched for this plugin's own repository bar must not be wired either:
+    // that bar is unregistered, so the probe would wait for an element that
+    // never arrives while holding a MutationObserver for the life of the page.
+    expect(client).not.toContain('watchClaudeComposerBar(')
     expect(client).not.toContain('document.documentElement).getPropertyValue')
     // Not just the diff overlay: onEntryError has to report before it recovers.
     expect(client).toMatch(/onEntryError\(\(key, entry, error\)/u)

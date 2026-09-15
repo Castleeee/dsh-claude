@@ -236,7 +236,42 @@ function foldedRows(
     })
   }
   const taskStatus = new Map(tasks.map(task => [task.taskId, task.status]))
-  return new Map([...rows].map(([id, row]) => [id, settled(row, taskStatus)]))
+  const answeredQuestions = answeredQuestionIds(activities)
+  return new Map([...rows].map(([id, row]) => [id, answerSettled(settled(row, taskStatus), answeredQuestions)]))
+}
+
+/**
+ * Tool calls a question was answered for.
+ *
+ * A question is deliberately two rows — that Claude asked, and that it was
+ * answered — and `foldKey` gives each activity its own `act-…` key, so the
+ * completion never lands on the row the start opened. That is fine for the
+ * text, but not for the state: the asking row is `started`, `running` is what
+ * draws its spinner, and nothing will ever re-describe it. Left alone it pulses
+ * for the rest of the session, on a question that was answered minutes ago.
+ *
+ * Reading the answer out of the activity stream is what settles it: the caller
+ * that owns the answer is the Host, and this side has nothing to ask.
+ */
+function answeredQuestionIds(activities: readonly ClaudeActivityEvent[]): ReadonlySet<string> {
+  const answered = new Set<string>()
+  for (const value of activities) {
+    if (value.kind !== 'question' || value.toolUseId === undefined) continue
+    if (value.phase === 'started' || value.phase === 'updated') continue
+    answered.add(value.toolUseId)
+  }
+  return answered
+}
+
+/** Settle the asking row of a question that already has a terminal counterpart. */
+function answerSettled(
+  row: ClaudeActivityChatData,
+  answered: ReadonlySet<string>,
+): ClaudeActivityChatData {
+  if (!row.running || row.activity.kind !== 'question') return row
+  const toolUseId = row.activity.toolUseId
+  if (toolUseId === undefined || !answered.has(toolUseId)) return row
+  return { ...row, running: false, activity: { ...row.activity, phase: 'completed' } }
 }
 
 function inputRecord(detail: string | undefined): Record<string, unknown> | undefined {

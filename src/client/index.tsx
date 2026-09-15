@@ -24,7 +24,6 @@ import { applyClaudeMarkdownTheme } from './markdown-theme.ts'
 import { pluginRead } from './plugin-transport.ts'
 import { CLAUDE_GLOBAL_SETTINGS_PATH } from '../constants.ts'
 import { ClaudePlanHeaderAction, type ClaudePlanHeaderActionInjected } from './ClaudePlanHeaderAction.tsx'
-import { ClaudeRepositoryStatus, type ClaudeRepositoryStatusInjected } from './ClaudeRepositoryStatus.tsx'
 import { ClaudeReviewComments, type ClaudeReviewCommentsInjected } from './ClaudeReviewComments.tsx'
 import { ClaudeQueueDock, type ClaudeQueueDockInjected } from './ClaudeQueueDock.tsx'
 import type { ClaudePullRequestsPanelInjected } from './ClaudePullRequestsPanel.tsx'
@@ -35,7 +34,6 @@ import type { ClaudeStatsPillsInjected } from './ClaudeStatsPills.tsx'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { ClaudeSelectionAsk } from './ClaudeSelectionAsk.tsx'
 import { claudeBootCheckFindings } from './boot-check.ts'
-import { watchClaudeComposerBar } from './composer-style-probe.ts'
 import { createClaudeDiagnosticsReporter } from './client-diagnostics.ts'
 import { ClaudeRewind, EMPTY_CHAT_VIEW, type ClaudeChatSource, type ClaudeChatView, type ClaudeRewindInjected } from './ClaudeRewind.tsx'
 import { ClaudeHeroRepositoryControls, type ClaudeHeroRepositoryControlsInjected } from './ClaudeHeroRepositoryControls.tsx'
@@ -119,10 +117,10 @@ export function apply(ctx: ClientContext): void {
   })) diagnostics.report('boot-check', finding)
   // The scoped custom properties cannot be read here: the Host publishes them
   // onto the composer subtree, and inheritance means only an element inside it
-  // sees one. Probe the plugin's own bar once it mounts instead.
-  ctx.effect(() => watchClaudeComposerBar(finding => {
-    diagnostics.report('boot-check', finding)
-  }), 'dsh-claude: composer style drift probe')
+  // sees one. The probe watched for this plugin's own repository bar, and that
+  // bar is no longer registered, so there is nothing left to wait for — a probe
+  // that never finds its element would keep a MutationObserver on the document
+  // for the life of the page and never report anything.
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-claude: client copy')
   const t = ctx.locale.bind(namespace) as ClaudeCodeSettingsInjected['t']
   ctx.effect(() => restyleHostChrome(), 'dsh-claude: Host chrome restyling')
@@ -288,6 +286,7 @@ ${error.stack ?? ''}`
     name: 'conversation.chat.turnTail',
     select: selectClaudeTurn,
     inject: (sessionId: string): ClaudeActivityTailInjected => ({
+      sessionId,
       t,
       openTasks: turn => openTasksPanel(sessionId, turn),
     }),
@@ -401,34 +400,19 @@ ${error.stack ?? ''}`
       }),
     }),
   }, ClaudeReviewComments))
-  ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
-    name: 'conversation.input.dock',
-    id: 'claude-repository-status',
-    // Below DSH's QueueDock (20) and above the hero controls (21), so the
-    // dock stacks comments (18) → queue (20) → repository readout.
-    order: 20.5,
-    locale: namespace,
-    inject: (sessionId: string): ClaudeRepositoryStatusInjected => {
-      const submitPrompt = submitPromptFor(sessionId)
-      return {
-        t,
-        openDiff: root => openDiffPanel(sessionId, root),
-        ...(submitPrompt === undefined ? {} : { submitPrompt }),
-        ...(sessions === undefined ? {} : { openOverview: () => openOverviewPanel(sessionId) }),
-        ...(workspaces === undefined ? {} : {
-          deleteWorkspace: async () => {
-            const workspace = workspaces.list.getSnapshot().items.find(item => item.sessionIds.includes(sessionId as SessionId))
-            if (workspace === undefined) return
-            // Deleting a workspace drops its sessions into the unaccounted
-            // group, so archive them first -- DSH's "delete session" is an
-            // archive, and the worktree they point at is already gone.
-            for (const id of workspace.sessionIds) await workspaces.archiveSession(id)
-            await workspaces.delete(workspace.workspaceId)
-          },
-        }),
-      }
-    },
-  }, ClaudeRepositoryStatus))
+  // The repository bar used to sit here, as a permanent row in the composer's
+  // dock (`conversation.input.dock`, id `claude-repository-status`, order 20.5).
+  // It is deliberately not registered any more: the branch it restated now has
+  // its own home in the `dsh-my-patch` git chip, and away from a repository the
+  // bar had nothing to say but still took a row above the composer.
+  //
+  // What lived only in that row and therefore has no seat right now: the
+  // repository controls (auto-fix, worktree cleanup, merge pull request, update
+  // branch), the linked-repository rows, and the remote/worktree badges.
+  // Viewing did not leave with it — the diff, plan, tasks and overview panels
+  // are the sidebar tabs, and the diff still has its Session-header trigger.
+  // `ClaudeRepositoryStatus.tsx` is kept, exported and tested for the moment
+  // those controls are given a new home; nothing in this file renders it.
   // The Host's own statistics row, in the same seat it registers its own into:
   // "conversation.composer.dock" at order 0. Both of its figures are built from
   // what DSH assembled, so for this preset the plugin draws the CLI's own
