@@ -36,7 +36,7 @@ import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-settings'
-import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
+import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER_IDS } from './constants.ts'
 import { AGENT_DEFAULT_MODEL_NS, CLAUDE_WORLD, DEFAULT_WORLD, PERMISSION_NS, type WorldId } from './world-store.ts'
 import { ClaudeWorldSwitch, modelSelectionOf, worldSettingsGateway, type SwitchOutcome } from './world-switch.ts'
 
@@ -286,7 +286,23 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
       if (selection === undefined) return
       enqueue(async () => {
         if (seedingAtArrival || isSeeding(session)) return
-        const world = worldOfSession(session, await options.switch.activeWorld())
+        const active = await options.switch.activeWorld()
+        const world = worldOfSession(session, active)
+        // A Claude route cannot run outside the Claude preset — the adapter
+        // refuses it — so a session in the shared world holding one is a session
+        // whose next turn fails. That value can only have arrived from the other
+        // world (a picker still showing it, a remembered model, a session that
+        // has since left). It is not this world's choice: put the session back
+        // on its own world's model instead of recording it.
+        if (world !== CLAUDE_WORLD && CLAUDE_CODE_PROVIDER_IDS.includes(selection.provider as never)) {
+          const sections = await options.switch.sectionsOf(world)
+          const own = modelSelectionOf(sections?.[AGENT_DEFAULT_MODEL_NS])
+          options.log?.(`session ${session.id} was handed ${selection.provider}/${selection.model}, which the ${world} world cannot route; restoring ${own?.provider ?? 'its own'}/${own?.model ?? 'model'}`)
+          if (own !== undefined && !CLAUDE_CODE_PROVIDER_IDS.includes(own.provider as never)) {
+            applyWorldToSession(session as Session, world, sections ?? {}, true)
+          }
+          return
+        }
         await options.switch.captureModel(world, selection)
       })
       return

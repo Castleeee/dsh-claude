@@ -278,6 +278,33 @@ describe('world wiring', () => {
     stop()
   })
 
+  it('puts a session back on its own model when it is handed a route its world cannot run', async () => {
+    // A Claude route outside the Claude preset is refused by the adapter, so a
+    // shared-world session holding one fails its next turn. The value can only
+    // have come from the other world, and it must not be recorded as this
+    // world's own model.
+    const settings = gateway({ 'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const installed: unknown[] = []
+    const { ctx, agents, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      applyModel: (_agent, selection) => { installed.push(selection) },
+    })
+    const shared = session('shared', { preset: 'cordis' })
+    agents.set('shared', { session: shared })
+    await worldSwitch.switchTo(DEFAULT_WORLD)
+    await worldSwitch.captureModel(DEFAULT_WORLD, { provider: 'opencode-go', model: 'deepseek-v4-flash' })
+
+    emit('session/event', shared, { type: 'model/selection', data: { provider: 'claude', model: 'opus' } })
+    await settle()
+
+    expect((await world.sectionsOf(DEFAULT_WORLD))?.[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-flash' })
+    expect(installed[installed.length - 1]).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-flash' })
+    stop()
+  })
+
   it('does not capture the permission a new session is pinned with from the other world', async () => {
     // The Host pins a new session's permission from the settings document as
     // part of creating it, before this wiring even hears about the session. That
