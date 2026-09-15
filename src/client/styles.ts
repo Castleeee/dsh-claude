@@ -3118,6 +3118,7 @@ export const diffCommitMenuButton: CSSProperties = {
 }
 
 export const diffRepositoryTriggerClass = 'dshClaudeDiffRepositoryTrigger'
+export const diffFileHeaderClass = 'dshClaudeDiffFileHeader'
 
 /** The checkout switch: a quiet pill in the header's own type, lit on hover
  *  and while its menu is open, with the chevron set off in a lighter tone. */
@@ -3152,6 +3153,15 @@ export const diffRepositoryCss = `
 .${diffRepositoryTriggerClass} > svg {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
+}
+/* Sticky headers each form a stacking context, so the host Tooltip bubble
+   (rendered inline, position: fixed) is painted under the next file's header.
+   Lift the hovered header above its siblings while the bubble can be open. */
+.${diffFileHeaderClass} {
+  z-index: 1;
+}
+.${diffFileHeaderClass}:hover {
+  z-index: 2;
 }
 `
 
@@ -3215,7 +3225,6 @@ export const diffFileHeader: CSSProperties = {
   // file's header pushes it out as that file scrolls up.
   position: 'sticky',
   top: 0,
-  zIndex: 1,
   width: '100%',
   minHeight: 38,
   display: 'flex',

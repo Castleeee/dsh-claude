@@ -392,7 +392,7 @@ function DiffFileSection({
   const dragSide = drag === undefined ? undefined : anchors[drag.start]?.side
   return (
     <section style={styles.diffFile}>
-      <button type="button" style={styles.diffFileHeader} aria-expanded={open} onClick={() => onOpenChange(!open)}>
+      <button type="button" className={styles.diffFileHeaderClass} style={styles.diffFileHeader} aria-expanded={open} onClick={() => onOpenChange(!open)}>
         <span data-diff-file-chevron="" style={{ ...styles.diffFileChevron, ...(open ? styles.chevronOpen : {}) }} aria-hidden="true">
           <IconChevronRightOutline14 size={14} />
         </span>
