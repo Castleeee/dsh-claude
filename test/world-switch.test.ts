@@ -7,6 +7,7 @@ import {
   CLAUDE_WORLD,
   ClaudeWorldStore,
   DEFAULT_WORLD,
+  PERMISSION_NS,
   parseWorldDocument,
 } from '../src/world-store.ts'
 import { ClaudeWorldSwitch, type WorldSettingsGateway } from '../src/world-switch.ts'
@@ -64,8 +65,7 @@ describe('two-world configuration store', () => {
     // provider/model pair exactly as the schema requires both fields.
     expect(settings.document[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-flash' })
 
-    settings.document[AGENT_DEFAULT_MODEL_NS] = { provider: 'claude', model: 'claude-sonnet' }
-    await worldSwitch.refresh()
+    await worldSwitch.captureModel(CLAUDE_WORLD, { provider: 'claude', model: 'claude-sonnet' })
     await worldSwitch.switchTo(DEFAULT_WORLD)
     await worldSwitch.switchTo(CLAUDE_WORLD)
     expect(settings.document[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude', model: 'claude-sonnet' })
@@ -149,9 +149,10 @@ describe('world switch', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings: settings.gateway, store })
 
     await worldSwitch.switchTo(CLAUDE_WORLD)
-    // The user picks a Claude-only model while Claude owns the document.
-    settings.document[AGENT_DEFAULT_MODEL_NS] = { provider: 'claude-code', model: 'sonnet' }
-    await worldSwitch.refresh()
+    // The user picks a Claude-only model while Claude owns the document. The
+    // session that made the choice belongs to Claude's world, which is what the
+    // wiring passes here; the document itself is never read back.
+    await worldSwitch.captureModel(CLAUDE_WORLD, { provider: 'claude-code', model: 'sonnet' })
 
     await worldSwitch.switchTo(DEFAULT_WORLD)
     expect(settings.document[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'p', model: 'deepseek' })
@@ -161,39 +162,62 @@ describe('world switch', () => {
     expect(settings.document[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude-code', model: 'sonnet' })
   })
 
-  it('does not let its own install be recaptured as a user change', async () => {
+  it('keeps the two worlds apart when a foreign session writes the document', async () => {
+    // The regression this store exists for: the document is shared by every
+    // session, so a session that belongs to the shared world can write it while
+    // Claude's world owns it. That value says nothing about Claude's world, and
+    // a store that read the document back would let the shared model replace
+    // Claude's — which is exactly how "switching back to Claude" stopped
+    // restoring the Claude model.
     const { store } = await storeFixture()
-    const settings = gateway({ permission: { defaultPreset: 'workspace-write' } })
-    const seen: string[] = []
-    const worldSwitch = new ClaudeWorldSwitch({
-      settings: {
-        read: settings.gateway.read,
-        async write(ns, section) {
-          // Mirror the Host: a write emits `settings/updated`, whose listener
-          // would call refresh(). The guard must make that a no-op.
-          await settings.gateway.write(ns, section)
-          seen.push(ns)
-          expect(worldSwitch.installing).toBe(true)
-        },
-      },
-      store,
-    })
+    const settings = gateway({ [AGENT_DEFAULT_MODEL_NS]: { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const worldSwitch = new ClaudeWorldSwitch({ settings: settings.gateway, store })
     await worldSwitch.switchTo(CLAUDE_WORLD)
-    expect(seen).toEqual(['permission'])
-    expect(settings.document.permission).toEqual({ defaultPreset: 'workspace-write' })
+    await worldSwitch.captureModel(CLAUDE_WORLD, { provider: 'claude', model: 'opus' })
 
-    // Outgoing capture stays intact despite the echoed write.
+    // A session of the shared world picks its own model; the Host writes the
+    // document as a side effect of that choice.
+    settings.document[AGENT_DEFAULT_MODEL_NS] = { provider: 'opencode-go', model: 'deepseek-v4-pro' }
+    await worldSwitch.captureModel(DEFAULT_WORLD, { provider: 'opencode-go', model: 'deepseek-v4-pro' })
+
     await worldSwitch.switchTo(DEFAULT_WORLD)
-    expect(await store.sectionsOf(DEFAULT_WORLD)).toEqual({ permission: { defaultPreset: 'workspace-write' } })
+    expect(settings.document[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-pro' })
+    await worldSwitch.switchTo(CLAUDE_WORLD)
+    expect(settings.document[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude', model: 'opus' })
+    // Claude's world was never written by anything but its own capture.
+    expect(await store.sectionsOf(CLAUDE_WORLD)).toEqual({ [AGENT_DEFAULT_MODEL_NS]: { provider: 'claude', model: 'opus' } })
   })
 
-  it('is a no-op when the document already belongs to the target world', async () => {
+  it('re-asserts the document from the world it claims to show', async () => {
+    // The document drifts whenever a session of another world writes it, so a
+    // preset selection re-installs the owning world's captured values even when
+    // ownership did not change. Without this a session switched back to its own
+    // preset would keep reading the drifted document.
     const { store } = await storeFixture()
     const settings = gateway({ permission: { defaultPreset: 'ask' } })
     const worldSwitch = new ClaudeWorldSwitch({ settings: settings.gateway, store })
-    const outcome = await worldSwitch.switchTo(DEFAULT_WORLD)
-    expect(outcome).toMatchObject({ from: DEFAULT_WORLD, to: DEFAULT_WORLD, installed: [] })
-    expect(settings.writes).toEqual([])
+    await worldSwitch.switchTo(CLAUDE_WORLD)
+    await worldSwitch.capturePermission(CLAUDE_WORLD, 'read-only')
+
+    settings.document.permission = { defaultPreset: 'workspace-write' }
+    const outcome = await worldSwitch.switchTo(CLAUDE_WORLD)
+    expect(outcome).toMatchObject({ from: CLAUDE_WORLD, to: CLAUDE_WORLD, installed: [PERMISSION_NS] })
+    expect(settings.document.permission).toEqual({ defaultPreset: 'read-only' })
+  })
+
+  it('records a session choice in its own world without moving the document', async () => {
+    const { store } = await storeFixture()
+    const settings = gateway({ [AGENT_DEFAULT_MODEL_NS]: { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const worldSwitch = new ClaudeWorldSwitch({ settings: settings.gateway, store })
+    await worldSwitch.switchTo(CLAUDE_WORLD)
+
+    await worldSwitch.captureModel(DEFAULT_WORLD, { provider: 'opencode-go', model: 'deepseek-v4-pro' })
+    expect(await store.activeWorld()).toBe(CLAUDE_WORLD)
+    expect(await store.sectionsOf(DEFAULT_WORLD)).toEqual({
+      [AGENT_DEFAULT_MODEL_NS]: { provider: 'opencode-go', model: 'deepseek-v4-pro' },
+    })
+    expect((await store.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS])
+      .toEqual({ provider: 'opencode-go', model: 'deepseek-v4-flash' })
   })
 
   it('records ownership even when no routed namespace is registered', async () => {

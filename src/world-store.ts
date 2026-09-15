@@ -9,9 +9,14 @@
  *
  * Only two worlds exist. `claude` is the Claude preset's own configuration.
  * `default` is every other preset's, shared, and is a restoration point rather
- * than a feature: it holds whatever the global document last was while a
- * non-Claude world owned it, refreshed live so switching back never resurrects
- * a stale snapshot.
+ * than a feature.
+ *
+ * A world is written by exactly two things: the one-time seeding of a world
+ * that was never captured, and a change the user made inside that world. The
+ * live settings document is never read back into a world, because the document
+ * is shared by every session while a world is not — a new session composed
+ * under another preset writes it too, and treating that as the owning world's
+ * own value is what once moved a Claude model into the shared world.
  *
  * @module dsh-claude/world-store
  */
@@ -163,6 +168,21 @@ export class ClaudeWorldStore {
       document.worlds[world][ns] = value
       document.activeWorld = activeWorld
     })
+  }
+
+  /**
+   * Capture one namespace into one world **without** touching ownership.
+   *
+   * This is how a world learns a value the user chose inside it: the change is
+   * attributed to the session that made it, so the world it belongs to can be
+   * updated while the document keeps belonging to whichever world owns it. The
+   * alternative — deriving a world's value from the live document — cannot tell
+   * a choice made in the world from one a foreign session happened to write,
+   * and that confusion is what let one world's model overwrite the other's.
+   */
+  async captureIntoSelf(world: WorldId, ns: string, value: unknown): Promise<void> {
+    if (!isNamespace(ns)) throw new Error(`dsh-claude: refusing to capture unrelated settings namespace ${ns}`)
+    await this.#mutate(document => { document.worlds[world][ns] = value })
   }
 
   /** Record ownership without changing any captured section. */

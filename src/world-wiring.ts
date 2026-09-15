@@ -1,7 +1,7 @@
 /**
  * Bind the preset switch to the two-world store.
  *
- * Three jobs, all reversible through the Fiber:
+ * Four jobs, all reversible through the Fiber:
  *
  * 1. `agent-preset/selected` is emitted for EVERY preset change, in both
  *    directions. The persisted selection is the authority, so a change into
@@ -9,10 +9,19 @@
  *    shared one. The event is not in the typed Host event map, so it is
  *    subscribed through a typed escape hatch (the existing precedent in
  *    `index.ts` for the same event).
- * 2. `settings/updated` refreshes the owning world, so a model or permission
- *    change made while Claude owns the document is written through immediately
- *    and the world never lags the live value.
- * 3. Boot recovery re-installs the recorded world, collapsing a switch that a
+ * 2. A session-scoped model or permission choice is captured into the world of
+ *    the session that made it, read from that session's preset projection. The
+ *    world that owns the document is explicitly NOT the criterion: the document
+ *    is shared by every session, so a session belonging to another world can
+ *    write it, and attributing such a write to the owning world is what once
+ *    let the shared model replace Claude's.
+ * 3. `session/created` moves the document to the new session's own world. A
+ *    brand-new session composes its model and permission from the document
+ *    (`agentDefaultModel.currentSelection()` and
+ *    `permissionPresets.pinInitialPermission`), so a session created while the
+ *    other world owned it would otherwise open with that world's model and
+ *    permission despite belonging to its own.
+ * 4. Boot recovery re-installs the recorded world, collapsing a switch that a
  *    crash interrupted.
  *
  * The emitted callback is synchronous while the work is asynchronous, so each
@@ -24,11 +33,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-settings'
 import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
-import { AGENT_DEFAULT_MODEL_NS, CLAUDE_WORLD, DEFAULT_WORLD, type WorldId } from './world-store.ts'
-import { ClaudeWorldSwitch, routedNamespace, worldSettingsGateway } from './world-switch.ts'
+import { AGENT_DEFAULT_MODEL_NS, CLAUDE_WORLD, DEFAULT_WORLD, PERMISSION_NS, type WorldId } from './world-store.ts'
+import { ClaudeWorldSwitch, modelSelectionOf, worldSettingsGateway, type SwitchOutcome } from './world-switch.ts'
 
 /** The event name dsh-agent-presets emits for a committed preset selection. */
 const PRESET_SELECTED_EVENT = 'agent-preset/selected'
@@ -38,11 +48,16 @@ export interface WorldWiringOptions {
   /** Restore the destination world's permission preset onto a session that is
    *  still blank, so switching into Claude changes the permission the user
    *  sees rather than leaving the outgoing world's. */
-  applyPermission?: (agent: Agent, preset: string) => void
+  applyPermission?: (session: Session, preset: string) => void
   /** Install the destination world's model onto the session itself. A session
    *  answers from its own logged selection, so writing the settings document
    *  alone leaves the running model unchanged. */
   applyModel?: (agent: Agent, selection: ModelSelection) => void
+  /** Pin a model onto a session that has no live Agent to install it on yet, by
+   *  appending the same session event the Host's own picker appends. Without
+   *  it a session composed after the correction would still resolve from the
+   *  document, which is the value being corrected. */
+  recordModelSelection?: (session: Session, selection: ModelSelection) => void
   /** Resolve a sandbox mode to the permission-preset name that bundles it, or
    *  `undefined` when no configured preset matches. */
   permissionNameFor?: (sandboxMode: string) => string | undefined
@@ -62,19 +77,9 @@ function permissionPresetOf(section: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-/** One world's captured model selection, normalized to the provider/model pair
- *  a session event carries. Both fields are required: the settings schema
- *  demands them, and a half-specified selection must not be installed. */
-function modelSelectionOf(section: unknown): ModelSelection | undefined {
-  if (section === null || typeof section !== 'object' || Array.isArray(section)) return undefined
-  const { provider, model, reasoningEffort } = section as {
-    provider?: unknown
-    model?: unknown
-    reasoningEffort?: unknown
-  }
-  if (typeof provider !== 'string' || provider.length === 0) return undefined
-  if (typeof model !== 'string' || model.length === 0) return undefined
-  return { provider, model }
+/** The world one preset belongs to. */
+function worldFor(preset: string): WorldId {
+  return preset === CLAUDE_CODE_PRESET_ID ? CLAUDE_WORLD : DEFAULT_WORLD
 }
 
 /**
@@ -83,12 +88,12 @@ function modelSelectionOf(section: unknown): ModelSelection | undefined {
  * a session past that boundary would append to a started session, so the check
  * is repeated here rather than assumed.
  */
-function isStillBlank(ctx: Context, agent: Agent): boolean {
+function isStillBlank(ctx: Context, session: Session): boolean {
   try {
     const projections = ctx.get('sessionProjections') as {
       stateOf(session: unknown, key: string): unknown
     } | undefined
-    const boundary = projections?.stateOf(agent.session, 'turnBoundary') as {
+    const boundary = projections?.stateOf(session, 'turnBoundary') as {
       openTurnStartSeq?: number | null
       lastTurn?: number
     } | undefined
@@ -102,7 +107,7 @@ function isStillBlank(ctx: Context, agent: Agent): boolean {
 /**
  * Install the world a preset change selects, and keep the worlds current.
  * @param ctx - the plugin's host context, used for events and its life cycle.
- * @param options - the switch plus the permission seam.
+ * @param options - the switch plus the session-facing seams.
  * @returns a disposer removing every subscription.
  */
 export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () => void {
@@ -118,12 +123,87 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
     })
   }
 
-  const worldFor = (preset: string): WorldId => preset === CLAUDE_CODE_PRESET_ID ? CLAUDE_WORLD : DEFAULT_WORLD
+  const projections = (): { stateOf(session: unknown, key: string): unknown } | undefined =>
+    ctx.get('sessionProjections') as { stateOf(session: unknown, key: string): unknown } | undefined
+
+  /** The preset a session currently belongs to, or `undefined` when the
+   *  projection cannot say. Read for every session-scoped choice: it is what
+   *  decides which world the choice is recorded in. */
+  const presetOf = (session: unknown): string | undefined => {
+    try {
+      const value = projections()?.stateOf(session, 'agentPreset')
+      return typeof value === 'string' && value.length > 0 ? value : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * The world a session-scoped choice belongs to.
+   *
+   * A session whose preset cannot be read falls back to the world that owns the
+   * document — the pre-existing behaviour, and correct for the common case
+   * where the acting session is the one that made the document follow it. The
+   * fallback is logged because a silent one would be indistinguishable from the
+   * attribution this exists to make.
+   */
+  const worldOfSession = (session: unknown, active: WorldId): WorldId => {
+    const preset = presetOf(session)
+    if (preset === undefined) {
+      options.log?.(`no agent-preset projection for a session choice; recording it in the ${active} world`)
+      return active
+    }
+    return worldFor(preset)
+  }
+
+  /** Whether a session already carries a model selection of its own. Only a
+   *  session without one may be re-pointed at its world's model: a resumed
+   *  session's own choice outranks the world's default. */
+  const hasOwnSelection = (session: unknown): boolean => {
+    try {
+      const state = projections()?.stateOf(session, 'modelSelection') as { pending?: unknown } | undefined
+      if (state?.pending !== null && state?.pending !== undefined) return true
+    } catch {
+      return true
+    }
+    try {
+      const header = (session as { requestHeader?(): unknown }).requestHeader?.()
+      return header !== undefined
+    } catch {
+      return true
+    }
+  }
 
   /** Sessions whose permission the wiring is currently moving to the
    *  destination world. Their `sandbox/mode` append is the move itself and must
    *  not be recorded as the user's new default. */
   const seeding = new Set<string>()
+
+  /** Apply one world's captured state to a session that has no state of its
+   *  own: its model first (a session may be past its first turn), then its
+   *  permission, which is only seedable while no turn has started. */
+  const applyWorldToSession = (session: Session, world: WorldId, sections: Record<string, unknown>): void => {
+    const selection = modelSelectionOf(sections[AGENT_DEFAULT_MODEL_NS])
+    if (selection !== undefined && !hasOwnSelection(session)) {
+      const agent = ctx.agents.get(session.id as never)
+      try {
+        if (agent === undefined) options.recordModelSelection?.(session, selection)
+        else options.applyModel?.(agent, selection)
+        options.log?.(`session ${session.id} model -> ${selection.provider}/${selection.model} (${world} world)`)
+      } catch (error) {
+        warn(`dsh-claude: could not apply the ${world} world's model to the session: ${String(error)}`)
+      }
+    }
+    if (!isStillBlank(ctx, session)) return
+    const presetName = permissionPresetOf(sections[PERMISSION_NS])
+    if (presetName === undefined) return
+    seeding.add(session.id)
+    try {
+      options.applyPermission?.(session, presetName)
+    } finally {
+      seeding.delete(session.id)
+    }
+  }
 
   const onPresetSelected = ctx.on as (
     event: typeof PRESET_SELECTED_EVENT,
@@ -146,8 +226,14 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
         options.log?.(`configuration world ${outcome.from} -> ${outcome.to} for preset "${preset}" (installed: ${outcome.installed.join(', ') || 'none'})`)
       }
       const agent = ctx.agents.get(sessionId as never)
-      if (agent === undefined) {
-        options.log?.(`preset-selected session=${sessionId}: no composed agent to re-model yet`)
+      // A session the Host has not composed yet still has to be re-pointed: the
+      // preset change is what the user just made, and its own logged selection
+      // outranks the document this switch rewrote. Composing one just to reach
+      // it would race the creation that is already in flight, so the session's
+      // own event is appended instead.
+      const session = (agent?.session ?? ctx.sessions.get(sessionId as never)) as Session | undefined
+      if (session === undefined) {
+        options.log?.(`preset-selected session=${sessionId}: no session to re-model yet`)
         return
       }
       // A session's model and permission are both session-local state, and both
@@ -157,72 +243,103 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
       // session directly, from the snapshot this switch installed rather than a
       // fresh store read — a re-read races the next switch and is what paired
       // one world's provider with another's model.
-      //
-      // The model is applied even when the world did not change, because "the
-      // document already belongs to this world" says nothing about whether this
-      // session does.
-      const sections = outcome.sections
-      const selection = modelSelectionOf(sections[AGENT_DEFAULT_MODEL_NS])
-      if (selection !== undefined) {
-        try {
-          options.applyModel?.(agent, selection)
-          options.log?.(`session ${sessionId} model -> ${selection.provider}/${selection.model} (${world} world)`)
-        } catch (error) {
-          warn(`dsh-claude: could not apply the ${world} world's model to the session: ${String(error)}`)
-        }
-      }
-      // Permission is seedable only while the session has started no turn, the
-      // same boundary `agentPresets.select` enforces.
-      if (!isStillBlank(ctx, agent)) return
-      const presetName = permissionPresetOf(sections.permission)
-      if (presetName === undefined) return
-      seeding.add(sessionId)
-      try {
-        options.applyPermission?.(agent, presetName)
-      } finally {
-        seeding.delete(sessionId)
-      }
+      applyWorldToSession(session, world, outcome.sections)
     })
   })
 
-  const stopUpdated = ctx.on('settings/updated', (ns: string) => {
-    if (!routedNamespace(ns)) return
-    enqueue(() => options.switch.refresh())
+  // A session-scoped choice is the ONLY thing that moves a world. The document
+  // is deliberately not consulted: it is shared by every session, so its value
+  // says nothing about which world a change came from.
+  const stopEvents = ctx.on('session/event', (session, event) => {
+    const record = event as { type?: unknown; data?: unknown }
+    if (record.type === 'model/selection') {
+      const selection = modelSelectionOf(record.data)
+      if (selection === undefined) return
+      enqueue(async () => {
+        const world = worldOfSession(session, await options.switch.activeWorld())
+        await options.switch.captureModel(world, selection)
+      })
+      return
+    }
+    if (record.type === 'permission/preset') {
+      const preset = (record.data as { preset?: unknown } | undefined)?.preset
+      if (typeof preset !== 'string' || preset.length === 0) return
+      // Decide here, while the guard is still raised: the append is synchronous
+      // but the work below is queued, and the guard is lowered by the time it
+      // runs. A preset appended by our own seeding is that move, not a user
+      // choice, and recording it would let a world switch overwrite the default
+      // the user actually picked.
+      if (seeding.size > 0) return
+      enqueue(async () => {
+        const active = await options.switch.activeWorld()
+        const world = worldOfSession(session, active)
+        await options.switch.capturePermission(world, preset)
+        // The document's default is what a new session is pinned with, so it
+        // follows the world that owns the document rather than a session that
+        // merely happens to be open.
+        if (world === active) await options.writePermissionDefault?.(preset)
+      })
+      return
+    }
+    if (record.type !== 'sandbox/mode') return
+    const mode = (record.data as { mode?: unknown } | undefined)?.mode
+    if (typeof mode !== 'string') return
+    if (seeding.size > 0) return
+    enqueue(async () => {
+      const preset = options.permissionNameFor?.(mode)
+      if (preset === undefined) return
+      const active = await options.switch.activeWorld()
+      const world = worldOfSession(session, active)
+      await options.switch.capturePermission(world, preset)
+      if (world === active) await options.writePermissionDefault?.(preset)
+    })
   })
 
-  // "The next session inherits the permission I chose" needs one write that
-  // nothing currently makes: `permissionPresets.set` appends to the session log
-  // only, while a new session's initial permission is read from the settings
-  // `permission.defaultPreset`. Recording each permission change as that
-  // default is what makes the choice outlive the session it was made in —
-  // routed by `settings/updated`, which then captures it into the world that
-  // owned the document at the time, so the two worlds keep separate defaults.
-  // The session event that records a permission change is `sandbox/mode`, whose
-  // type augmentation comes from the sandbox-policy package; this plugin
-  // consumes the payload structurally rather than depending on that module.
-  const stopSandbox = ctx.on('session/event', (session, event) => {
-    const record = event as { type?: unknown; data?: { mode?: unknown } }
-    if (record.type !== 'sandbox/mode') return
-    const mode = record.data?.mode
-    if (typeof mode !== 'string') return
-    // Decide here, while the guard is still raised: the append is synchronous
-    // but the work below is queued, and the guard is lowered by the time it
-    // runs. A mode appended by our own seeding is that move, not a user choice,
-    // and recording it would let a preset switch overwrite the default the user
-    // actually picked.
-    if (seeding.size > 0) return
-    void session
+  // A session's model and permission are both composed from the document, so a
+  // session created while another world owned it would open with that world's
+  // values. Moving the document to the new session's own world first makes the
+  // composition correct rather than correcting it afterwards; the explicit
+  // apply below then covers a session the Host already composed.
+  //
+  // Only a session with nothing of its own is touched. A session the Host is
+  // re-attaching — every resumed session at boot — already answers from its own
+  // logged selection and permission, and moving the document for those would
+  // rewrite the settings document once per session for a value none of them
+  // reads.
+  const stopCreated = ctx.on('session/created', (session) => {
+    if (delegationDepthOf(session) > 0) return
+    const preset = presetOf(session)
+    if (preset === undefined) return
+    if (hasOwnSelection(session) || !isStillBlank(ctx, session)) return
+    const world = worldFor(preset)
     enqueue(async () => {
-      const name = options.permissionNameFor?.(mode)
-      if (name === undefined) return
-      await options.writePermissionDefault?.(name)
+      let outcome: SwitchOutcome | undefined
+      if (await options.switch.activeWorld() !== world) {
+        outcome = await options.switch.switchTo(world)
+        options.log?.(`configuration world ${outcome.from} -> ${outcome.to} for new session ${session.id} (${preset})`)
+      }
+      const sections = outcome?.sections ?? await options.switch.sectionsOf(world)
+      if (sections === undefined) return
+      applyWorldToSession(session, world, sections)
     })
   })
 
   return () => {
     stopSelected()
-    stopUpdated()
-    stopSandbox()
+    stopEvents()
+    stopCreated()
+  }
+}
+
+/** How deep a session sits below the user's own conversation. Read
+ *  structurally: a delegated session inherits its parent's world and must not
+ *  move the document out from under the user's. */
+function delegationDepthOf(session: unknown): number {
+  try {
+    const depth = (session as { header?: { delegationDepth?: unknown } }).header?.delegationDepth
+    return typeof depth === 'number' ? depth : 0
+  } catch {
+    return 0
   }
 }
 

@@ -353,6 +353,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       settings: worldSettingsGateway(ctx),
       store: new ClaudeWorldStore(config.worldsFile === undefined ? {} : { path: config.worldsFile }),
       warn: message => { ctx.logger.warn(message) },
+      log: message => { ctx.logger.info(`dsh-claude: ${message}`) },
     })
     await recoverWorldAtBoot(worldSwitch, message => { ctx.logger.warn(message) })
     ctx.effect(() => mountWorldWiring(ctx, {
@@ -361,12 +362,20 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       // so installing a world does not move them. A still-blank session gets the
       // destination world's preset applied directly, which is what makes the
       // permission the user sees follow the preset switch.
-      applyPermission: (agent, preset) => {
+      applyPermission: (session, preset) => {
         try {
-          ctx.permissionPresets.set(agent.session, preset)
+          ctx.permissionPresets.set(session, preset)
         } catch (error) {
           ctx.logger.warn(`dsh-claude: could not apply the ${preset} permission preset: ${String(error)}`)
         }
+      },
+      // A session the Host has not composed yet has nowhere to install a
+      // selection, and the document may already have moved on by the time it is.
+      // Appending the same session event the Host's picker appends pins the
+      // choice to the session itself, which is what keeps a later composition
+      // from resolving back to the document.
+      recordModelSelection: (session, selection) => {
+        session.append('model/selection', selection)
       },
       // The model must be installed on the session itself, not only in the
       // settings document. A session answers from its own logged selection, and

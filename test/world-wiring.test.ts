@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ClaudeWorldStore, CLAUDE_WORLD, DEFAULT_WORLD } from '../src/world-store.ts'
+import { AGENT_DEFAULT_MODEL_NS, ClaudeWorldStore, CLAUDE_WORLD, DEFAULT_WORLD, PERMISSION_NS } from '../src/world-store.ts'
 import { ClaudeWorldSwitch, routedNamespace } from '../src/world-switch.ts'
 import { mountWorldWiring, recoverWorldAtBoot } from '../src/world-wiring.ts'
 
@@ -24,17 +24,60 @@ async function store() {
   return created
 }
 
+/** The turn boundary a session has before it runs anything. */
+const BLANK = { openTurnStartSeq: null, lastTurn: 0 }
+
+interface SessionOptions {
+  preset?: string
+  depth?: number
+  turnBoundary?: { openTurnStartSeq: number | null; lastTurn: number }
+  /** The `modelSelection` projection's pending selection, as the Host folds it. */
+  pending?: unknown
+  /** The session's persisted request header, which outranks a world's model. */
+  requestHeader?: unknown
+}
+
 /**
  * A context stub exposing only what the wiring touches. `emit` invokes the
  * registered handlers synchronously, which is how the real Host delivers a
- * session append.
+ * session append, and the projection map is keyed by the session object the
+ * same way the Host's own projection store is.
  */
-function context(projectionState: unknown = { openTurnStartSeq: null, lastTurn: 0 }) {
+function context() {
   const handlers = new Map<string, ((...args: never[]) => void)[]>()
-  const agents = new Map<string, unknown>()
+  const agents = new Map<string, { session: FakeSession }>()
+  const sessions = new Map<string, FakeSession>()
+  const states = new WeakMap<object, Record<string, unknown>>()
+
+  interface FakeSession {
+    id: string
+    header: { delegationDepth: number }
+    appended: { type: string; data: unknown }[]
+    append(type: string, data: unknown): void
+    requestHeader(): unknown
+  }
+
+  const session = (id: string, options: SessionOptions = {}): FakeSession => {
+    const value: FakeSession = {
+      id,
+      header: { delegationDepth: options.depth ?? 0 },
+      appended: [],
+      append(type, data) { value.appended.push({ type, data }) },
+      requestHeader: () => options.requestHeader,
+    }
+    states.set(value, {
+      agentPreset: options.preset,
+      turnBoundary: options.turnBoundary ?? BLANK,
+      modelSelection: { pending: options.pending ?? null },
+    })
+    sessions.set(id, value)
+    return value
+  }
+
   const ctx = {
     logger: { warn: () => undefined },
     agents: { get: (id: string) => agents.get(id) },
+    sessions: { get: (id: string) => sessions.get(id), list: () => [...sessions.values()] },
     on(event: string, handler: (...args: never[]) => void) {
       const list = handlers.get(event) ?? []
       list.push(handler)
@@ -45,13 +88,13 @@ function context(projectionState: unknown = { openTurnStartSeq: null, lastTurn: 
     },
     get(name: string) {
       if (name !== 'sessionProjections') return undefined
-      return { stateOf: () => projectionState }
+      return { stateOf: (session: object, key: string) => states.get(session)?.[key] }
     },
     emit(event: string, ...args: unknown[]) {
       for (const handler of handlers.get(event) ?? []) (handler as (...a: unknown[]) => void)(...args)
     },
   }
-  return { ctx: ctx as never, agents, emit: ctx.emit.bind(ctx) }
+  return { ctx: ctx as never, agents, session, emit: ctx.emit.bind(ctx) }
 }
 
 /** Let the wiring's serialized chain drain: it spans several awaits, so a
@@ -93,16 +136,21 @@ describe('world wiring', () => {
     })
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, { switch: worldSwitch })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude' })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
     expect(await world.activeWorld()).toBe(CLAUDE_WORLD)
 
-    settings.document['agent-default-model'] = { provider: 'claude-code', model: 'sonnet' }
-    await worldSwitch.refresh()
+    // The user picks a Claude model in that session; the choice belongs to the
+    // session's own world.
+    emit('session/event', s1, { type: 'model/selection', data: { provider: 'claude-code', model: 'sonnet' } })
+    await settle()
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS])
+      .toEqual({ provider: 'claude-code', model: 'sonnet' })
 
     emit('agent-preset/selected', 's1', 'cordis')
     await settle()
@@ -115,9 +163,10 @@ describe('world wiring', () => {
     const settings = gateway({ permission: { defaultPreset: 'ask' } })
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, { switch: worldSwitch })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'cordis' })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
@@ -134,6 +183,42 @@ describe('world wiring', () => {
     stop()
   })
 
+  it('records a session choice in the world that session belongs to', async () => {
+    // The regression: the settings document is shared, so a session of the
+    // shared world writes it even while Claude's world owns it. Reading that
+    // document back into Claude's world is what replaced Claude's model with
+    // the shared one, and what made switching back stop restoring it.
+    const settings = gateway({ 'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const { ctx, agents, session, emit } = context()
+    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    const claude = session('claude-session', { preset: 'claude' })
+    const shared = session('shared-session', { preset: 'cordis' })
+    agents.set('claude-session', { session: claude })
+    agents.set('shared-session', { session: shared })
+
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    emit('session/event', claude, { type: 'model/selection', data: { provider: 'claude', model: 'opus' } })
+    await settle()
+
+    // A session of the shared world picks its own model, and the Host writes
+    // the document as part of that choice.
+    settings.document['agent-default-model'] = { provider: 'opencode-go', model: 'deepseek-v4-pro' }
+    emit('session/event', shared, { type: 'model/selection', data: { provider: 'opencode-go', model: 'deepseek-v4-pro' } })
+    await settle()
+
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude', model: 'opus' })
+    expect((await world.sectionsOf(DEFAULT_WORLD))?.[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-pro' })
+
+    // Switching back to Claude restores the Claude model, not the shared one.
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    expect(settings.document['agent-default-model']).toEqual({ provider: 'claude', model: 'opus' })
+    stop()
+  })
+
   it('installs the destination world model on the session itself', async () => {
     const settings = gateway({
       'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' },
@@ -141,12 +226,13 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude' })
+    agents.set('s1', { session: s1 })
 
     // Claude's world is seeded from the outgoing value on the first switch.
     emit('agent-preset/selected', 's1', 'claude')
@@ -154,8 +240,8 @@ describe('world wiring', () => {
     expect(installed).toEqual([{ provider: 'opencode-go', model: 'deepseek-v4-flash' }])
 
     // The user picks a Claude model; it belongs to the Claude world.
-    settings.document['agent-default-model'] = { provider: 'claude', model: 'opus' }
-    await worldSwitch.refresh()
+    emit('session/event', s1, { type: 'model/selection', data: { provider: 'claude', model: 'opus' } })
+    await settle()
     emit('agent-preset/selected', 's1', 'standard')
     await settle()
     // Switching out must put the session back on the shared world's model, not
@@ -178,12 +264,13 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
-    const { ctx, agents, emit } = context({ openTurnStartSeq: null, lastTurn: 4 })
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude', turnBoundary: { openTurnStartSeq: null, lastTurn: 4 } })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
@@ -196,16 +283,119 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude' })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
     expect(installed).toEqual([])
+    stop()
+  })
+
+  it('moves the document to the world of a session created outside it', async () => {
+    // A new session composes its model and permission from the document, so a
+    // session created while the other world owned it would open on that world's
+    // values despite belonging to its own.
+    const settings = gateway({
+      'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' },
+      permission: { defaultPreset: 'workspace-write' },
+    })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const recorded: unknown[] = []
+    const applied: string[] = []
+    const { ctx, agents, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      recordModelSelection: (target, selection) => { recorded.push({ id: target.id, selection }) },
+      applyPermission: (_target, preset) => { applied.push(preset) },
+    })
+    const claude = session('claude-session', { preset: 'claude' })
+    agents.set('claude-session', { session: claude })
+
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    emit('session/event', claude, { type: 'model/selection', data: { provider: 'claude', model: 'opus' } })
+    await settle()
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude', model: 'opus' })
+
+    // The user opens a new conversation, which is a shared-world session.
+    const created = session('cordis-session', { preset: 'cordis' })
+    emit('session/created', created)
+    await settle()
+
+    expect(await world.activeWorld()).toBe(DEFAULT_WORLD)
+    expect(settings.document['agent-default-model']).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-flash' })
+    expect(recorded).toEqual([{ id: 'cordis-session', selection: { provider: 'opencode-go', model: 'deepseek-v4-flash' } }])
+    // The preset selection seeds the Claude session from the world it just
+    // entered; the new session then gets the shared world's preset.
+    expect(applied).toEqual(['workspace-write', 'workspace-write'])
+    stop()
+  })
+
+  it('leaves a session that already has a model of its own alone', async () => {
+    const settings = gateway({ 'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const installed: unknown[] = []
+    const { ctx, agents, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      applyModel: (_agent, selection) => { installed.push(selection) },
+    })
+    // A resumed session carries the model the user chose inside it, which
+    // outranks the world's default.
+    const resumed = session('resumed', { preset: 'cordis', requestHeader: { config: { provider: 'p', model: 'm' } } })
+    agents.set('resumed', { session: resumed })
+
+    emit('session/created', resumed)
+    await settle()
+    expect(installed).toEqual([])
+    stop()
+  })
+
+  it('leaves a session that has already run a turn alone when it is re-attached', async () => {
+    // Every session is announced again when the Host attaches it, so the
+    // creation path must not rewrite the document once per session at boot.
+    const settings = gateway({ 'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const applied: string[] = []
+    const { ctx, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      applyPermission: (_target, preset) => { applied.push(preset) },
+    })
+    emit('agent-preset/selected', 's1', 'claude')
+    await settle()
+
+    const old = session('old-cordis', { preset: 'cordis', turnBoundary: { openTurnStartSeq: null, lastTurn: 7 } })
+    emit('session/created', old)
+    await settle()
+    expect(await world.activeWorld()).toBe(CLAUDE_WORLD)
+    expect(applied).toEqual([])
+    stop()
+  })
+
+  it('leaves the document alone for a delegated session', async () => {
+    const settings = gateway({ 'agent-default-model': { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const { ctx, session, emit } = context()
+    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    emit('agent-preset/selected', 's1', 'claude')
+    await settle()
+    const child = session('subagent', { preset: 'cordis', depth: 1 })
+    emit('session/created', child)
+    await settle()
+    // A delegated session inherits its parent's world; it must not drag the
+    // document out from under the conversation the user is looking at.
+    expect(await world.activeWorld()).toBe(CLAUDE_WORLD)
     stop()
   })
 
@@ -214,12 +404,13 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const applied: string[] = []
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, {
       switch: worldSwitch,
-      applyPermission: (_agent, preset) => applied.push(preset),
+      applyPermission: (_target, preset) => applied.push(preset),
     })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude' })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
@@ -232,12 +423,13 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const applied: string[] = []
-    const { ctx, agents, emit } = context({ openTurnStartSeq: null, lastTurn: 3 })
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, {
       switch: worldSwitch,
-      applyPermission: (_agent, preset) => applied.push(preset),
+      applyPermission: (_target, preset) => applied.push(preset),
     })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude', turnBoundary: { openTurnStartSeq: null, lastTurn: 3 } })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
@@ -268,21 +460,49 @@ describe('world wiring', () => {
     stop()
   })
 
+  it('records a permission change inside the world of the session that made it', async () => {
+    const settings = gateway({ permission: { defaultPreset: 'workspace-write' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const { ctx, agents, session, emit } = context()
+    const stop = mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      permissionNameFor: mode => mode,
+      writePermissionDefault: async () => undefined,
+    })
+    const claude = session('claude-session', { preset: 'claude' })
+    const shared = session('shared-session', { preset: 'cordis' })
+    agents.set('claude-session', { session: claude })
+    agents.set('shared-session', { session: shared })
+
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    emit('session/event', shared, { type: 'permission/preset', data: { preset: 'danger-full-access' } })
+    await settle()
+
+    expect((await world.sectionsOf(DEFAULT_WORLD))?.[PERMISSION_NS]).toEqual({ defaultPreset: 'danger-full-access' })
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[PERMISSION_NS]).not.toEqual({ defaultPreset: 'danger-full-access' })
+    stop()
+  })
+
   it('does not record its own seeded permission as the user choice', async () => {
     const settings = gateway({ permission: { defaultPreset: 'workspace-write' } })
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const written: string[] = []
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
+    const s1 = session('s1', { preset: 'claude' })
     const stop = mountWorldWiring(ctx, {
       switch: worldSwitch,
       // Applying a permission appends the session event a real Host would,
       // which is exactly the echo that must not be recorded as a choice.
-      applyPermission: (_agent, preset) => { emit('session/event', {}, { type: 'sandbox/mode', data: { mode: preset } }) },
+      applyPermission: (target, preset) => {
+        emit('session/event', target, { type: 'sandbox/mode', data: { mode: preset } })
+      },
       permissionNameFor: mode => mode,
       writePermissionDefault: async preset => { written.push(preset) },
     })
-    agents.set('s1', { session: {} })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
@@ -294,14 +514,18 @@ describe('world wiring', () => {
     const settings = gateway({ permission: { defaultPreset: 'ask' } })
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, { switch: worldSwitch })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude' })
+    agents.set('s1', { session: s1 })
     stop()
 
     emit('agent-preset/selected', 's1', 'claude')
+    emit('session/created', s1)
+    emit('session/event', s1, { type: 'model/selection', data: { provider: 'claude', model: 'opus' } })
     await settle()
     expect(await world.activeWorld()).toBe(DEFAULT_WORLD)
+    expect(await world.sectionsOf(CLAUDE_WORLD)).toBeUndefined()
   })
 
   it('contains a failed switch and keeps serving later changes', async () => {
@@ -316,9 +540,10 @@ describe('world wiring', () => {
       },
     }
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world, warn: m => warned.push(m) })
-    const { ctx, agents, emit } = context()
+    const { ctx, agents, session, emit } = context()
     const stop = mountWorldWiring(ctx, { switch: worldSwitch, warn: m => warned.push(m) })
-    agents.set('s1', { session: {} })
+    const s1 = session('s1', { preset: 'claude' })
+    agents.set('s1', { session: s1 })
 
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
