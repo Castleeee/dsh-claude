@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { apply } from '../src/preset-route.ts'
 import { CLAUDE_CODE_PROVIDER } from '../src/constants.ts'
+import { recordClaudeModels, resetClaudeModels } from '../src/model-catalog.ts'
 
 type RequestListener = (payload: unknown, next: () => Promise<{ provider?: string; model?: string }>) => Promise<{ provider?: string; model?: string }>
 
@@ -29,9 +30,38 @@ function capture(): { ctx: Context; listener: () => RequestListener; registered:
 describe('Claude preset route', () => {
   it('preserves the upstream selected model alias', async () => {
     const captured = capture()
-    apply(captured.ctx)
+    apply(captured.ctx, { accepts: model => model === 'opus' })
     const result = await captured.listener()({} as never, async () => ({ provider: 'upstream-provider', model: 'opus' }))
     expect(result).toEqual({ provider: CLAUDE_CODE_PROVIDER, model: 'opus' })
+  })
+
+  // The provider is forced unconditionally, so a model this provider cannot
+  // serve must not be carried through beside it: `claude` paired with a
+  // DeepSeek id is a request no adapter can resolve, and is exactly what a
+  // session leaving the shared world for this preset used to produce.
+  it('drops a foreign model instead of pairing it with the Claude provider', async () => {
+    const captured = capture()
+    apply(captured.ctx, { accepts: model => model === 'opus' })
+    const result = await captured.listener()({} as never, async () => ({
+      provider: 'upstream-provider',
+      model: 'deepseek-v4-flash-vision-exp',
+    }))
+    expect(result).toEqual({ provider: CLAUDE_CODE_PROVIDER, model: 'default' })
+  })
+
+  it('keeps a model the CLI lineup advertises under either spelling', async () => {
+    recordClaudeModels([{ value: 'claude-opus-4-1', displayName: 'Opus' }] as never)
+    try {
+      const captured = capture()
+      apply(captured.ctx)
+      // The CLI's own spelling is what a session persisted before aliasing holds.
+      const own = await captured.listener()({} as never, async () => ({ provider: 'x', model: 'claude-opus-4-1' }))
+      expect(own.model).toBe('claude-opus-4-1')
+      const foreign = await captured.listener()({} as never, async () => ({ provider: 'x', model: 'gpt-5' }))
+      expect(foreign.model).toBe('default')
+    } finally {
+      resetClaudeModels()
+    }
   })
 
   it('defaults to default when upstream carries no model', async () => {
