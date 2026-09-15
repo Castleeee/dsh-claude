@@ -27,6 +27,7 @@ import {
 } from '../src/client/ClaudeTasksPanel.tsx'
 import { ClaudeActivityTail } from '../src/client/ClaudeActivityTail.tsx'
 import { ClaudeActiveTasksNode } from '../src/client/ClaudeActiveTasksNode.tsx'
+import { ClaudeContextMeter, ClaudeContextPanel } from '../src/client/ClaudeContextMeter.tsx'
 import {
   ClaudeActivityNode,
   ClaudeCompactionDivider,
@@ -709,6 +710,83 @@ describe('Claude sidecar conversation projection', () => {
     expect(done).toContain('tasksTurnCompleted')
     expect(done).not.toContain('dsh-claude-act-running')
     expect(render([{ taskId: 'failed', description: 'failed', status: 'failed', originTurn: 2, subagentType: 'general-purpose' }])).toContain('tasksTurnFailed')
+  })
+
+
+  it('draws Claude\'s own context composition in the composer seat', () => {
+    const projection = {
+      owned: true,
+      activities: [{ turn: 3, step: 1, ordinal: 9, kind: 'compaction', detail: JSON.stringify({ trigger: 'auto', preTokens: 72_734, postTokens: 1_925, durationMs: 8_958 }) }],
+      contextUsage: {
+        model: 'claude-opus-5[1M]',
+        totalTokens: 540_000,
+        maxTokens: 1_000_000,
+        percentage: 54,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 967_000,
+        categories: [
+          { name: 'System prompt', tokens: 4_600, color: '#8b95a5' },
+          { name: 'System tools', tokens: 8_700, color: '#a78bfa' },
+          { name: 'Messages', tokens: 445_000, color: '#3b82f6' },
+          { name: 'Free space', tokens: 460_000, color: '#e5e7eb' },
+        ],
+        messageBreakdown: {
+          toolCallTokens: 40_000,
+          toolResultTokens: 380_000,
+          attachmentTokens: 0,
+          assistantMessageTokens: 20_000,
+          userMessageTokens: 5_000,
+          redirectedContextTokens: 0,
+          unattributedTokens: 0,
+        },
+      },
+    }
+    const t = ((key: string, params?: Record<string, unknown>) => `${key}:${JSON.stringify(params ?? {})}`) as never
+    const render = (value: Record<string, unknown>) => renderToStaticMarkup(createElement(ClaudeContextMeter, {
+      t,
+      useClaudeProjection: ((selector: (projection: unknown) => unknown) => selector(value)) as never,
+    }))
+    // Nothing for a session this plugin does not own: the Host keeps its meter.
+    expect(render({ owned: false, activities: [] })).toBe('')
+    expect(render({ owned: true, activities: [] })).toBe('')
+    const trigger = render(projection)
+    expect(trigger).toContain('data-dsh-claude-context-meter')
+    expect(trigger).toContain('data-dsh-claude-context-trigger')
+    expect(trigger).toContain('stroke-dasharray')
+    // The ring is closed until it is opened.
+    expect(trigger).not.toContain('data-dsh-claude-context-panel')
+
+    const panel = renderToStaticMarkup(createElement(ClaudeContextPanel, {
+      usage: projection.contextUsage as never,
+      compaction: projection.activities[0] as never,
+      t,
+    }))
+    // The CLI's own composition, not DSH's three-row heuristic.
+    expect(panel).toContain('contextUsed')
+    expect(panel).toContain('contextCategorySystemPrompt')
+    expect(panel).toContain('contextCategoryMcpTools'.replace('McpTools', 'SystemTools'))
+    expect(panel).toContain('445K')
+    expect(panel).toContain('540K')
+    // Free space is the absence of usage, so it is not a row.
+    expect(panel).not.toContain('contextCategoryFree')
+    // What the messages are made of, and the state of auto-compaction.
+    expect(panel).toContain('contextBreakdownTitle')
+    expect(panel).toContain('contextBreakdownToolResults')
+    expect(panel).toContain('380K')
+    expect(panel).toContain('contextAutoCompactOn')
+    expect(panel).toContain('967K')
+    // The before/after of the last compaction, which only the boundary carries.
+    expect(panel).toContain('contextLastCompaction')
+    expect(panel).toContain('72.7K')
+    expect(panel).toContain('1.9K')
+    expect(panel).toContain('9.0')
+    // An older CLI that reports no auto-compact state must not read as "off".
+    const unknown = renderToStaticMarkup(createElement(ClaudeContextPanel, {
+      usage: { model: 'm', totalTokens: 10, maxTokens: 100, percentage: 10, categories: [] } as never,
+      t,
+    }))
+    expect(unknown).not.toContain('contextAutoCompactOn')
+    expect(unknown).not.toContain('contextAutoCompactOff')
   })
 
   it('renders the active task node reactively for the owning turn', () => {
