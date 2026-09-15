@@ -192,12 +192,12 @@ class DeferredImportSidecar extends ClaudeSidecarRepository {
   }
 }
 
-const init = (sessionId = 'claude-session-1') => ({
+const init = (sessionId = 'claude-session-1', cwd = '/workspace') => ({
   type: 'system',
   subtype: 'init',
   session_id: sessionId,
   claude_code_version: '2.1.233',
-  cwd: '/workspace',
+  cwd,
 }) as SDKMessage
 
 const delta = (text: string) => ({
@@ -1009,6 +1009,30 @@ describe('Claude supervisor', () => {
     transport.queries[0]!.push(init('persisted-claude-session'))
     transport.queries[0]!.push(result('continued', 'persisted-claude-session'))
     await collect(output)
+    await runtime.dispose()
+  })
+
+  it('accepts the restored shell cwd on resume but still rejects a fresh process elsewhere', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    owner.events.push({
+      type: 'claude-code/session-bound',
+      data: { claudeSessionId: 'persisted-claude-session', sdkVersion: '0.3.233', cwd: '/workspace' },
+      seq: owner.events.length,
+      time: 5,
+    })
+    const runtime = supervisor(transport.create)
+    await sidecars.get(runtime)!.importLegacy(owner.agent.id as string, owner.agent.session.snapshotEvents())
+    // The last turn's Bash `cd` is where Claude Code resumes its shell.
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'continue' })
+    transport.queries[0]!.push(init('persisted-claude-session', '/workspace/services/accounting-service'))
+    transport.queries[0]!.push(result('continued', 'persisted-claude-session'))
+    await expect(collect(output)).resolves.toContainEqual(expect.objectContaining({ type: 'text-delta', text: 'continued' }))
+
+    const fresh = fakeAgent('dsh-session-2')
+    const wrong = await runtime.runTurn({ agent: fresh.agent, prompt: 'hello' })
+    transport.queries[1]!.push(init('claude-session-2', '/elsewhere'))
+    await expect(collect(wrong)).rejects.toThrow(/unexpected cwd/u)
     await runtime.dispose()
   })
 

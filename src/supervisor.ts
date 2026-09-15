@@ -1111,7 +1111,10 @@ export class ClaudeSupervisor {
       if (entry.expectedResume !== undefined && message.sessionId !== entry.expectedResume) {
         throw new ClaudeProtocolError(`Claude Code resumed unexpected session ${message.sessionId}; expected ${entry.expectedResume}`)
       }
-      if (message.cwd !== entry.cwd) {
+      // A resumed process reports the shell cwd Claude Code restored with the
+      // session -- wherever the last Bash `cd` left it -- not its launch
+      // directory; the session id check above already proves identity.
+      if (entry.expectedResume === undefined && message.cwd !== entry.cwd) {
         throw new ClaudeProtocolError(`Claude Code initialized in unexpected cwd ${message.cwd}; expected ${entry.cwd}`)
       }
       entry.initialized = true
