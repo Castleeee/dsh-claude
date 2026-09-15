@@ -88,6 +88,26 @@ describe('managed Agent Preset installation', () => {
     await expect(ensureManagedPreset(paths)).resolves.toBe('unchanged')
   })
 
+  it('upgrades the preset metadata an earlier template left on disk', async () => {
+    const paths = await fixture()
+    await mkdir(paths.targetDir, { recursive: true })
+    // The body this template shipped before the preset was renamed. It differs
+    // from the current source in exactly the two lines a fork edits, and an
+    // install carrying it has to converge: treating it as a user edit is what
+    // left the picker showing the old name with no hint why.
+    await writeFile(join(paths.targetDir, 'preset.yml'), [
+      '# Shipped by dsh-claude. Copy this system preset under a new id to customize it.',
+      'name: Claude',
+      'description: Use the local Claude Code as the complete agent runtime inside DSH.',
+      'order: 10',
+      '',
+    ].join('\n'))
+
+    await expect(ensureManagedPreset(paths)).resolves.toBe('installed')
+    await expect(readFile(join(paths.targetDir, 'preset.yml'), 'utf8')).resolves.toContain('Claude Code CLI')
+    await expect(ensureManagedPreset(paths)).resolves.toBe('unchanged')
+  })
+
   it('upgrades a Windows absolute route path left by an older installer', async () => {
     const paths = await fixture()
     await mkdir(paths.targetDir, { recursive: true })
