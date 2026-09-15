@@ -131,6 +131,8 @@ function supervisor(
   idleTimeoutMs = 60_000,
   suppliedSidecar?: ClaudeSidecarRepository,
   renderMode: ClaudeRenderMode = 'plugin',
+  attachments?: import('../src/adapter.ts').ClaudeAttachmentReader,
+  warnings?: string[],
 ) {
   const root = join(tmpdir(), `dsh-claude-supervisor-${randomUUID()}`)
   sidecarRoots.push(root)
@@ -149,6 +151,8 @@ function supervisor(
     config,
     queryFactory: create,
     sidecar,
+    ...(attachments === undefined ? {} : { attachments }),
+    ...(warnings === undefined ? {} : { logger: { warn: (message: string) => { warnings.push(message) } } }),
   })
   sidecars.set(runtime, sidecar)
   configs.set(runtime, config)
@@ -1639,6 +1643,35 @@ describe('Claude supervisor', () => {
     query.fail(new Error('process crashed'))
     await expect(collect(output)).rejects.toBeInstanceOf(ClaudeOutcomeUnknownError)
     expect(runtime.snapshots()).toHaveLength(0)
+    await runtime.dispose()
+  })
+
+  it('says how the process ended, and logs it, when a turn dies with it', async () => {
+    // "Outcome unknown" is the truth and tells a reader nothing: whether the
+    // CLI exited on its own or something killed it, and whether a tool call was
+    // still in flight, is what decides whether the work landed.
+    const transport = factory()
+    const owner = fakeAgent()
+    const warnings: string[] = []
+    const runtime = supervisor(transport.create, 4, 60_000, undefined, 'plugin', undefined, warnings)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'edit something' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(delta('working'))
+    query.push(toolCallMessage)
+    query.fail(new Error('process crashed'))
+    const failure = await collect(output).then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(ClaudeOutcomeUnknownError)
+    expect((failure as Error).message).toContain('side-effect outcome is unknown')
+    expect((failure as Error).message).toContain('1 tool call(s) were still unanswered')
+    // The fake query has no process to watch, and the message says so rather
+    // than leaving the reader to guess.
+    expect((failure as Error).message).toContain('no process was running')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('mid-turn after activity')
+    // The row keeps the same answer for a reader who was not watching the turn.
+    const row = (await projection(runtime)).activities.find(activity => activity.title === 'Claude Code outcome unknown')
+    expect(row?.summary).toContain('tool call(s) were still unanswered')
     await runtime.dispose()
   })
 
