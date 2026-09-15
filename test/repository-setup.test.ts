@@ -645,6 +645,7 @@ describe('merged cleanup', () => {
     const { root, leasePath, worktreeRoot } = await roots()
     const clean = runtime([
       { stdout: '' },
+      { stdout: `${root}/.git\n${root}/.git\n` },
       { stdout: `${root}\n` },
       { stdout: 'feature/done\n' },
       { stdout: '' },
@@ -684,12 +685,33 @@ describe('merged cleanup', () => {
       .resolves.toEqual({ mode: 'worktree', root, branch: result.branch })
   })
 
+  it('removes a worktree another tool added, with no lease, from the main checkout', async () => {
+    const { root, leasePath, worktreeRoot } = await roots()
+    const path = join(root, '.claude', 'worktrees', 'item-size-filter')
+    await mkdir(path, { recursive: true })
+    const fake = runtime([
+      { stdout: '' },
+      { stdout: `${root}/.git/worktrees/item-size-filter\n${root}/.git\n` },
+      { stdout: 'feat/item-size-filter\n' },
+      { stdout: '' },
+      { stdout: '' },
+    ])
+    await expect(new RepositorySetupService(fake, { leasePath, worktreeRoot }).cleanupMerged(path, 'master'))
+      .resolves.toEqual({ mode: 'worktree', root, branch: 'feat/item-size-filter' })
+    const calls = fake.spawn.mock.calls.map(call => call[0])
+    expect(calls.map(call => call.argv)).toContainEqual(['/bin/git', 'worktree', 'remove', '--', path])
+    expect(calls.map(call => call.argv)).toContainEqual(['/bin/git', 'branch', '-D', '--', 'feat/item-size-filter'])
+    expect(calls.map(call => call.argv)).not.toContainEqual(['/bin/git', 'switch', '--', 'master'])
+    expect(calls.filter(call => call.argv.includes('remove') || call.argv.includes('-D')).every(call => call.cwd === root)).toBe(true)
+  })
+
   it('cleans up a named branch behind a checkout already back on base, and refuses without a name', async () => {
     const { root, leasePath, worktreeRoot } = await roots()
     // A session that opened a pull request elsewhere switched that clone back to
     // base itself; the merged branch is still a local branch to delete.
     const named = runtime([
       { stdout: '' },
+      { stdout: `${root}/.git\n${root}/.git\n` },
       { stdout: `${root}\n` },
       { stdout: 'main\n' },
       { stdout: '' },
@@ -701,7 +723,7 @@ describe('merged cleanup', () => {
     expect(argv).toContainEqual(['/bin/git', 'branch', '-D', '--', 'PSOS-5567'])
     expect(argv).not.toContainEqual(['/bin/git', 'switch', '--', 'main'])
 
-    const unnamed = runtime([{ stdout: '' }, { stdout: `${root}\n` }, { stdout: 'main\n' }])
+    const unnamed = runtime([{ stdout: '' }, { stdout: `${root}/.git\n${root}/.git\n` }, { stdout: `${root}\n` }, { stdout: 'main\n' }])
     await expect(new RepositorySetupService(unnamed, { leasePath, worktreeRoot }).cleanupMerged(root, 'main'))
       .rejects.toMatchObject<Partial<RepositorySetupError>>({ code: 'nothing-to-clean' })
   })

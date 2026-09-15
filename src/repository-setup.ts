@@ -273,9 +273,10 @@ export class RepositorySetupService {
     return !local && remote ? this.#checkoutRemote(info, branch) : this.#checkout(info, branch)
   }
 
-  /** Tear down a merged branch: remove a plugin worktree (and its lease and
-   *  branch), or switch a plain checkout back to the base branch and delete
-   *  the merged branch. Refuses dirty trees. */
+  /** Tear down a merged branch: remove a worktree (a plugin one with its
+   *  lease, or one another tool added) and its branch, or switch a plain
+   *  checkout back to the base branch and delete the merged branch. Refuses
+   *  dirty trees. */
   /** `branch` names the merged branch when the checkout is no longer on it:
    *  a session that opened a pull request in another clone switched that
    *  clone back to base itself, and only the local branch is left to delete.
@@ -301,6 +302,23 @@ export class RepositorySetupService {
         await this.#writeLeases(current.filter(item => item.id !== lease.id))
         return { mode: 'worktree' as const, root: lease.root, branch: lease.branch }
       })
+    }
+    // A linked worktree without a lease -- Claude Code's own `.claude/worktrees`,
+    // a hand-run `git worktree add` -- cannot be treated as a plain checkout:
+    // base is checked out in the main worktree, so `git switch` would refuse.
+    const dirs = await this.#run(git, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], path)
+    const [gitDir = '', commonDir = ''] = dirs.exitCode === 0 ? dirs.stdout.trim().split(/\r?\n/u) : []
+    if (gitDir.length > 0 && comparablePath(gitDir) !== comparablePath(commonDir)) {
+      // ponytail: the main checkout is taken as the parent of the common dir, which holds for any `<root>/.git`; a bare or GIT_DIR-relocated repository is not handled.
+      const mainRoot = resolve(commonDir, '..')
+      const head = named === undefined ? await this.#run(git, ['symbolic-ref', '--quiet', '--short', 'HEAD'], path) : undefined
+      const branch = named ?? (head?.exitCode === 0 ? head.stdout.trim() : '')
+      if (branch.length === 0) throw new RepositorySetupError('nothing-to-clean', 'The worktree is not on a branch.')
+      if (requirePushed) await this.#requirePushed(git, mainRoot, branch)
+      const removed = await this.#run(git, ['worktree', 'remove', '--', path], mainRoot)
+      if (removed.exitCode !== 0) throw new RepositorySetupError('worktree-remove-failed', 'Git could not remove the worktree.')
+      await this.#run(git, ['branch', '-D', '--', branch], mainRoot).catch(() => undefined)
+      return { mode: 'worktree', root: mainRoot, branch }
     }
     const root = await this.#repositoryRoot(git, path)
     if (base === undefined) throw new RepositorySetupError('nothing-to-clean', 'A plain checkout needs the base branch to return to.')
