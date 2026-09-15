@@ -358,6 +358,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     await recoverWorldAtBoot(worldSwitch, message => { ctx.logger.warn(message) })
     ctx.effect(() => mountWorldWiring(ctx, {
       switch: worldSwitch,
+      // The routes this package serves are the ones it registered its adapter
+      // for, which is the same constant the registration above used. Asking the
+      // registry instead cannot answer this: `listProviders()` lists every
+      // provider any plugin registered, so it cannot say which of them are ours
+      // — and making the answer depend on that lookup would turn a transient
+      // registration state into a silently dropped model choice.
+      ownsRoute: provider => CLAUDE_CODE_PROVIDER_IDS.includes(provider as never),
       // Permissions live in the session log rather than the settings document,
       // so installing a world does not move them. A still-blank session gets the
       // destination world's preset applied directly, which is what makes the

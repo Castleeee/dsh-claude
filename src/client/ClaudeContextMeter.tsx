@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ClaudeActivityEvent, ClaudeContextUsageEvent } from '../events.ts'
+import { FALLBACK_CONTEXT_COLOR, type ClaudeActivityEvent, type ClaudeContextUsageCategory, type ClaudeContextUsageEvent } from '../events.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { ClaudeClientProjection } from './projection.ts'
 import { useClaudeSessionMark } from './session-mark.ts'
@@ -26,6 +26,42 @@ const CATEGORY_LABELS: Readonly<Record<string, ClaudeCodeSettingsKey>> = {
   Skills: 'contextCategorySkills',
   Agents: 'contextCategoryAgents',
   'Free space': 'contextCategoryFree',
+}
+
+/** The color each category this panel draws is separated by.
+ *
+ *  Claude Code's report carries no color of its own: every category arrives
+ *  wearing the same "no color reported" value, so a legend drawn straight from
+ *  it names rows it cannot tell apart. The three categories the Host's own
+ *  meter also draws keep the Host's hues — neutral for the system prompt,
+ *  violet for tools, blue for messages — so a reader moving between the two
+ *  meters reads the same color for the same thing; the rest of the CLI's
+ *  accounting gets a hue of its own. */
+const CATEGORY_COLORS: Readonly<Record<string, string>> = {
+  'System prompt': 'var(--dsw-static-neutral-bluish-400, #8b95a5)',
+  'System tools': '#a78bfa',
+  'MCP tools': '#34d399',
+  'Memory files': '#fbbf24',
+  Messages: 'var(--dsw-static-blue-450, #3b82f6)',
+  Skills: '#f472b6',
+  Agents: '#22d3ee',
+}
+
+/** Hues for a category this panel has not been taught: the CLI may add one at
+ *  any time, and hashing its name keeps a row on the same hue across renders
+ *  and between sessions. */
+const CATEGORY_PALETTE: readonly string[] = Object.values(CATEGORY_COLORS)
+
+/** The color one category is drawn with: the one the CLI chose when it chose
+ *  one, and otherwise a hue that separates this category from the rows beside
+ *  it. */
+export function contextCategoryColor(category: ClaudeContextUsageCategory): string {
+  if (category.color.toLowerCase() !== FALLBACK_CONTEXT_COLOR) return category.color
+  const known = CATEGORY_COLORS[category.name]
+  if (known !== undefined) return known
+  let hash = 0
+  for (const character of category.name) hash = (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0
+  return CATEGORY_PALETTE[hash % CATEGORY_PALETTE.length] as string
 }
 
 export interface ClaudeContextMeterInjected {
@@ -102,9 +138,16 @@ export function ClaudeContextMeter({ useClaudeProjection, t }: ClaudeContextMete
   const usage = useClaudeProjection(value => value.contextUsage)
   const owned = useClaudeProjection(value => value.owned)
   const compaction = useClaudeProjection(value => latestCompaction(value.activities))
+  // Whether this session has run at all, which is what a fresh conversation has
+  // not done yet. The usage sample alone cannot say so: `importLegacy` seeds
+  // `contextUsage` from a resumed session's own event log, so a session that has
+  // sent nothing already holds a figure and would open wearing it. The activity
+  // list is the honest signal — empty means nothing has run here, while any
+  // conversation with history carries one, so its own usage still shows at once.
+  const started = useClaudeProjection(value => value.activities.length > 0)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLSpanElement>(null)
-  const available = owned && usage !== undefined
+  const available = owned && started && usage !== undefined
 
   // The Host's meter reads the same window and draws the same ring from a
   // composition it cannot see for this preset; the session mark stands it down,
@@ -197,22 +240,26 @@ export function ClaudeContextPanel({ usage, compaction, t }: {
       </div>
       {percent < 100 ? null : <div style={styles.contextMeterWarning}>{t('contextOverLimit')}</div>}
       <div style={styles.contextMeterBar}>
-        {(rows.length === 0 ? [{ name: 'total', color: undefined, tokens: 1, isDeferred: undefined }] : rows).map(row => (
-          <span
-            key={row.name}
-            style={{
-              ...styles.contextMeterSegment,
-              background: row.color ?? 'var(--dsw-alias-label-tertiary)',
-              width: `${Math.max(1, (percent * row.tokens) / Math.max(1, used))}%`,
-            }}
-          />
-        ))}
+        {rows.length === 0
+          // A report whose categories are all empty still has a used figure to
+          // draw, and no category to tint it with.
+          ? <span style={{ ...styles.contextMeterSegment, background: 'var(--dsw-alias-label-tertiary)', width: '100%' }} />
+          : rows.map(row => (
+            <span
+              key={row.name}
+              style={{
+                ...styles.contextMeterSegment,
+                background: contextCategoryColor(row),
+                width: `${Math.max(1, (percent * row.tokens) / Math.max(1, used))}%`,
+              }}
+            />
+          ))}
       </div>
       <dl style={styles.contextMeterRows}>
         {rows.map(row => (
           <div key={row.name} style={styles.contextMeterRow}>
             <dt style={styles.contextMeterRowLabel}>
-              <span style={{ ...styles.contextMeterSwatch, background: row.color ?? 'var(--dsw-alias-label-tertiary)' }} aria-hidden="true" />
+              <span style={{ ...styles.contextMeterSwatch, background: contextCategoryColor(row) }} aria-hidden="true" />
               {CATEGORY_LABELS[row.name] === undefined ? row.name : t(CATEGORY_LABELS[row.name] as ClaudeCodeSettingsKey)}
               {row.isDeferred === true ? <span style={styles.contextMeterDeferred}>{t('contextDeferred')}</span> : null}
             </dt>

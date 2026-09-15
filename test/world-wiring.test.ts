@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
+import { CLAUDE_CODE_PROVIDER_IDS } from '../src/constants.ts'
 import { AGENT_DEFAULT_MODEL_NS, ClaudeWorldStore, CLAUDE_WORLD, DEFAULT_WORLD, PERMISSION_NS } from '../src/world-store.ts'
 import { ClaudeWorldSwitch, routedNamespace } from '../src/world-switch.ts'
-import { mountWorldWiring, recoverWorldAtBoot } from '../src/world-wiring.ts'
+import { mountWorldWiring, recoverWorldAtBoot, type WorldWiringOptions } from '../src/world-wiring.ts'
 
 const roots: string[] = []
 /** Settles every store this file opened, so a queued write cannot outlive its
@@ -121,6 +123,18 @@ function gateway(initial: Record<string, unknown> = {}) {
   }
 }
 
+/** The routes this package serves, as the adapter registry would answer. The
+ *  wiring asks for capability rather than a provider name, so the tests supply
+ *  the one route the Claude adapter registers; a test that needs a different
+ *  answer passes its own `ownsRoute`. */
+const ownsClaudeRoute = (provider: string): boolean => CLAUDE_CODE_PROVIDER_IDS.includes(provider as never)
+
+/** Mount the wiring with the route predicate every test but the guard's own
+ *  takes for granted. */
+function mount(ctx: Context, options: Omit<WorldWiringOptions, 'ownsRoute'> & { ownsRoute?: WorldWiringOptions['ownsRoute'] }): () => void {
+  return mountWorldWiring(ctx, { ownsRoute: ownsClaudeRoute, ...options })
+}
+
 describe('world wiring', () => {
   it('routes only the two namespaces it owns', () => {
     expect(routedNamespace('agent-default-model')).toBe(true)
@@ -137,7 +151,7 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    const stop = mount(ctx, { switch: worldSwitch })
     const s1 = session('s1', { preset: 'claude' })
     agents.set('s1', { session: s1 })
 
@@ -146,11 +160,13 @@ describe('world wiring', () => {
     expect(await world.activeWorld()).toBe(CLAUDE_WORLD)
 
     // The user picks a Claude model in that session; the choice belongs to the
-    // session's own world.
-    emit('session/event', s1, { type: 'model/selection', data: { provider: 'claude-code', model: 'sonnet' } })
+    // session's own world. The provider is the route this package actually
+    // registers — a name the registry does not serve would be refused by the
+    // guard below rather than recorded.
+    emit('session/event', s1, { type: 'model/selection', data: { provider: 'claude', model: 'sonnet' } })
     await settle()
     expect((await world.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS])
-      .toEqual({ provider: 'claude-code', model: 'sonnet' })
+      .toEqual({ provider: 'claude', model: 'sonnet' })
 
     emit('agent-preset/selected', 's1', 'cordis')
     await settle()
@@ -164,7 +180,7 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    const stop = mount(ctx, { switch: worldSwitch })
     const s1 = session('s1', { preset: 'cordis' })
     agents.set('s1', { session: s1 })
 
@@ -192,7 +208,7 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    const stop = mount(ctx, { switch: worldSwitch })
     const claude = session('claude-session', { preset: 'claude' })
     const shared = session('shared-session', { preset: 'cordis' })
     agents.set('claude-session', { session: claude })
@@ -227,7 +243,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
@@ -264,7 +280,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
@@ -288,7 +304,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
@@ -305,6 +321,57 @@ describe('world wiring', () => {
     stop()
   })
 
+  it('keeps a foreign route out of the Claude world the same way', async () => {
+    // The refusal read in the other direction. Claude Code owns its inner loop
+    // and bridges only its own registered models, so a Claude-preset session
+    // handed a foreign route cannot run it either. The value arrives from the
+    // other world (a picker still showing it), and recording it would leave the
+    // composer advertising a model the session silently replaces at request
+    // time. It must be put back on the Claude world's own model instead.
+    const settings = gateway({ 'agent-default-model': { provider: 'claude', model: 'opus' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const installed: unknown[] = []
+    const { ctx, agents, session, emit } = context()
+    const stop = mount(ctx, {
+      switch: worldSwitch,
+      applyModel: (_agent, selection) => { installed.push(selection) },
+    })
+    const claude = session('claude-session', { preset: 'claude' })
+    agents.set('claude-session', { session: claude })
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+    await worldSwitch.captureModel(CLAUDE_WORLD, { provider: 'claude', model: 'opus' })
+
+    emit('session/event', claude, { type: 'model/selection', data: { provider: 'opencode-go', model: 'deepseek-v4-flash' } })
+    await settle()
+
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude', model: 'opus' })
+    expect(installed[installed.length - 1]).toEqual({ provider: 'claude', model: 'opus' })
+    stop()
+  })
+
+  it('records a Claude model chosen inside the Claude world', async () => {
+    // The mirror of the test above must not swallow the legitimate case: a
+    // Claude route chosen while the Claude world owns the session is exactly
+    // this world's own choice and is recorded as such.
+    const settings = gateway({ 'agent-default-model': { provider: 'claude', model: 'opus' } })
+    const world = await store()
+    const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
+    const { ctx, agents, session, emit } = context()
+    const stop = mount(ctx, { switch: worldSwitch })
+    const claude = session('claude-session', { preset: 'claude' })
+    agents.set('claude-session', { session: claude })
+    emit('agent-preset/selected', 'claude-session', 'claude')
+    await settle()
+
+    emit('session/event', claude, { type: 'model/selection', data: { provider: 'claude', model: 'sonnet' } })
+    await settle()
+
+    expect((await world.sectionsOf(CLAUDE_WORLD))?.[AGENT_DEFAULT_MODEL_NS]).toEqual({ provider: 'claude', model: 'sonnet' })
+    stop()
+  })
+
   it('does not capture the permission a new session is pinned with from the other world', async () => {
     // The Host pins a new session's permission from the settings document as
     // part of creating it, before this wiring even hears about the session. That
@@ -316,7 +383,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const applied: string[] = []
     const { ctx, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyPermission: (_target, preset) => { applied.push(preset) },
     })
@@ -354,7 +421,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
@@ -373,7 +440,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
@@ -399,7 +466,7 @@ describe('world wiring', () => {
     const recorded: unknown[] = []
     const applied: string[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       recordModelSelection: (target, selection) => { recorded.push({ id: target.id, selection }) },
       applyPermission: (_target, preset) => { applied.push(preset) },
@@ -433,7 +500,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const installed: unknown[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyModel: (_agent, selection) => { installed.push(selection) },
     })
@@ -456,7 +523,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const applied: string[] = []
     const { ctx, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyPermission: (_target, preset) => { applied.push(preset) },
     })
@@ -476,7 +543,7 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const { ctx, session, emit } = context()
-    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    const stop = mount(ctx, { switch: worldSwitch })
     emit('agent-preset/selected', 's1', 'claude')
     await settle()
     const child = session('subagent', { preset: 'cordis', depth: 1 })
@@ -494,7 +561,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const applied: string[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyPermission: (_target, preset) => applied.push(preset),
     })
@@ -513,7 +580,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const applied: string[] = []
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       applyPermission: (_target, preset) => applied.push(preset),
     })
@@ -532,7 +599,7 @@ describe('world wiring', () => {
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const written: string[] = []
     const { ctx, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       permissionNameFor: mode => mode === 'danger-full-access' ? 'danger-full-access' : undefined,
       writePermissionDefault: async preset => { written.push(preset) },
@@ -554,7 +621,7 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       permissionNameFor: mode => mode,
       writePermissionDefault: async () => undefined,
@@ -581,7 +648,7 @@ describe('world wiring', () => {
     const written: string[] = []
     const { ctx, agents, session, emit } = context()
     const s1 = session('s1', { preset: 'claude' })
-    const stop = mountWorldWiring(ctx, {
+    const stop = mount(ctx, {
       switch: worldSwitch,
       // Applying a permission appends the session event a real Host would,
       // which is exactly the echo that must not be recorded as a choice.
@@ -604,7 +671,7 @@ describe('world wiring', () => {
     const world = await store()
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world })
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, { switch: worldSwitch })
+    const stop = mount(ctx, { switch: worldSwitch })
     const s1 = session('s1', { preset: 'claude' })
     agents.set('s1', { session: s1 })
     stop()
@@ -630,7 +697,7 @@ describe('world wiring', () => {
     }
     const worldSwitch = new ClaudeWorldSwitch({ settings, store: world, warn: m => warned.push(m) })
     const { ctx, agents, session, emit } = context()
-    const stop = mountWorldWiring(ctx, { switch: worldSwitch, warn: m => warned.push(m) })
+    const stop = mount(ctx, { switch: worldSwitch, warn: m => warned.push(m) })
     const s1 = session('s1', { preset: 'claude' })
     agents.set('s1', { session: s1 })
 

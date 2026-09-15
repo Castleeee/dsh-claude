@@ -45,6 +45,15 @@ const PRESET_SELECTED_EVENT = 'agent-preset/selected'
 
 export interface WorldWiringOptions {
   switch: ClaudeWorldSwitch
+  /** Whether a provider route is one this package serves.
+   *
+   *  The two worlds are separated by *capability*, not by model: what a world
+   *  cannot run is whatever route this package's adapter does not answer. That
+   *  set is what the adapter was registered with, so the caller answers from
+   *  the same list it registered — a route added there is covered the day it
+   *  appears, and nothing here has to guess from the shared registry, which
+   *  lists every other plugin's providers too and cannot say which are ours. */
+  ownsRoute: (provider: string) => boolean
   /** Restore the destination world's permission preset onto a session that is
    *  still blank, so switching into Claude changes the permission the user
    *  sees rather than leaving the outgoing world's. */
@@ -288,17 +297,32 @@ export function mountWorldWiring(ctx: Context, options: WorldWiringOptions): () 
         if (seedingAtArrival || isSeeding(session)) return
         const active = await options.switch.activeWorld()
         const world = worldOfSession(session, active)
-        // A Claude route cannot run outside the Claude preset — the adapter
-        // refuses it — so a session in the shared world holding one is a session
-        // whose next turn fails. That value can only have arrived from the other
-        // world (a picker still showing it, a remembered model, a session that
-        // has since left). It is not this world's choice: put the session back
-        // on its own world's model instead of recording it.
-        if (world !== CLAUDE_WORLD && CLAUDE_CODE_PROVIDER_IDS.includes(selection.provider as never)) {
+        // Whether this package can run the route. `ownsRoute` answers from the
+        // routes this package's adapter was registered for, which is the only
+        // set that separates the two worlds: a route this package does not
+        // answer is one the Claude preset rewrites to its own provider anyway.
+        const runnable = options.ownsRoute(selection.provider)
+        // The two worlds are separated by capability, and a selection that
+        // crosses the line is un-runnable wherever it lands. A Claude route
+        // cannot run outside the Claude preset — this package's adapter is the
+        // only thing that serves it — and the Claude preset cannot run a foreign
+        // route either, because Claude Code owns its inner loop and bridges only
+        // its own registered models. Either way the value can only have arrived
+        // from the other world (a picker still showing it, a remembered model, a
+        // session that has since left). It is not this world's choice: put the
+        // session back on its own world's model instead of recording it.
+        //
+        // Correcting the foreign-to-Claude direction here is what keeps the
+        // composer and the session agreeing; left to request time, the picker
+        // went on advertising a model the next turn silently replaced.
+        const foreign = world === CLAUDE_WORLD ? !runnable : runnable
+        if (foreign) {
           const sections = await options.switch.sectionsOf(world)
           const own = modelSelectionOf(sections?.[AGENT_DEFAULT_MODEL_NS])
           options.log?.(`session ${session.id} was handed ${selection.provider}/${selection.model}, which the ${world} world cannot route; restoring ${own?.provider ?? 'its own'}/${own?.model ?? 'model'}`)
-          if (own !== undefined && !CLAUDE_CODE_PROVIDER_IDS.includes(own.provider as never)) {
+          // Only a value this world can actually run is worth reinstating; a
+          // store that never captured one leaves the session where it is.
+          if (own !== undefined && options.ownsRoute(own.provider) === (world === CLAUDE_WORLD)) {
             applyWorldToSession(session as Session, world, sections ?? {}, true)
           }
           return
