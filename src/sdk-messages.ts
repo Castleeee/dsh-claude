@@ -52,6 +52,29 @@ export type NormalizedSdkMessage =
   | { kind: 'status'; title: string; summary?: string; detail?: unknown }
   | { kind: 'warning'; title: string; summary?: string; detail?: unknown }
   | {
+    /** The CLI's own bookkeeping for a prompt it accepted, keyed by the uuid
+     *  this host stamped on the message: queued → started → completed. The
+     *  prompt that opened a turn is that turn, but a message pushed while the
+     *  turn was running has no other evidence anywhere — and its `queued` frame
+     *  is the acknowledgement a reader waiting on a mid-turn send looks for. */
+    kind: 'command-lifecycle'
+    commandUuid: string
+    state: 'queued' | 'started' | 'completed' | 'cancelled'
+  }
+  | {
+    /** One invocation of a configured hook, folded from its start and its
+     *  response. A hook runs inside the turn and can hold it or bend it, so it
+     *  is work the transcript owes the reader; the per-chunk `hook_progress`
+     *  frames in between stay telemetry. */
+    kind: 'hook'
+    hookId: string
+    state: 'started' | 'completed' | 'failed'
+    hookName?: string
+    hookEvent?: string
+    exitCode?: number
+    output?: string
+  }
+  | {
     /** Progress telemetry the CLI streams while it works (see
      *  {@link CLAUDE_PROGRESS_SUBTYPES}). It proves the turn is alive and
      *  nothing else: the activity log never keeps it. */
@@ -323,7 +346,27 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
     }]
   }
   if (subtype === 'api_retry') {
-    return [{ kind: 'warning', title: 'Claude API retry', detail: message }]
+    // A retry is the one wait the user should not have to guess at: the CLI
+    // knows the attempt, the reason and the delay, and the row says all three
+    // instead of making the reader open a JSON blob.
+    const attempt = finiteNumber(message.attempt)
+    const maxRetries = finiteNumber(message.max_retries)
+    const delayMs = finiteNumber(message.retry_delay_ms)
+    const errorStatus = finiteNumber(message.error_status)
+    const error = string(message.error)
+    const summary = [
+      errorStatus === undefined ? undefined : `HTTP ${errorStatus}`,
+      error,
+      delayMs === undefined ? undefined : `retrying in ${Math.max(1, Math.round(delayMs / 1_000))}s`,
+    ].filter((part): part is string => part !== undefined && part.length > 0).join(' · ')
+    return [{
+      kind: 'warning',
+      title: attempt === undefined || maxRetries === undefined
+        ? 'Claude Code is retrying'
+        : `Claude Code is retrying (${attempt}/${maxRetries})`,
+      ...(summary.length === 0 ? {} : { summary }),
+      detail: message,
+    }]
   }
   if (subtype === 'compact_boundary') {
     // `/compact` runs entirely inside the CLI: no assistant turn, and the
@@ -357,6 +400,51 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
     // one step can produce tens of thousands of durable rows — the transcript
     // renders none of them, and each one costs a full sidecar rewrite.
     return [{ kind: 'progress', subtype }]
+  }
+  if (subtype === 'hook_started' || subtype === 'hook_response') {
+    // One row per invocation, folded host-side on `hook_id`: a hook that blocks
+    // or rewrites a turn is otherwise invisible, and the transcript cannot tell
+    // a slow hook from a slow model. Its progress frames are telemetry (see
+    // CLAUDE_PROGRESS_SUBTYPES) and never reach here.
+    const hookId = string(message.hook_id)
+    if (hookId !== undefined) {
+      const hookName = string(message.hook_name)
+      const hookEvent = string(message.hook_event)
+      if (subtype === 'hook_started') {
+        return [{
+          kind: 'hook',
+          hookId,
+          state: 'started',
+          ...(hookName === undefined ? {} : { hookName }),
+          ...(hookEvent === undefined ? {} : { hookEvent }),
+        }]
+      }
+      const exitCode = finiteNumber(message.exit_code)
+      const output = string(message.output) ?? string(message.stderr)
+      return [{
+        kind: 'hook',
+        hookId,
+        state: exitCode !== undefined && exitCode !== 0 ? 'failed' : 'completed',
+        ...(hookName === undefined ? {} : { hookName }),
+        ...(hookEvent === undefined ? {} : { hookEvent }),
+        ...(exitCode === undefined ? {} : { exitCode }),
+        ...(output === undefined || output.length === 0 ? {} : { output }),
+      }]
+    }
+    // No id to fold on, but a hook that failed can block or bend the turn, so
+    // the failure still earns a row; anything else falls through to the
+    // generic hook status below.
+    if (subtype === 'hook_response' && finiteNumber(message.exit_code) !== undefined && message.exit_code !== 0) {
+      const name = string(message.hook_name)
+      const event = string(message.hook_event)
+      const output = string(message.output)
+      return [{
+        kind: 'warning',
+        title: `Claude Code hook ${name ?? 'failed'}`,
+        ...(event === undefined ? {} : { summary: `${event} exited ${String(message.exit_code)}` }),
+        ...(output === undefined || output.length === 0 ? {} : { detail: output }),
+      }]
+    }
   }
   if (subtype?.startsWith('hook_') === true || subtype === 'plugin_install') {
     return [{ kind: 'status', title: claudeStatusTitle(subtype), detail: message }]
@@ -476,6 +564,18 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     // telemetry class as the thinking-token frames, and equally unrenderable:
     // see CLAUDE_PROGRESS_SUBTYPES.
     return [{ kind: 'progress', subtype: 'tool_progress' }]
+  }
+  if (value.type === 'command_lifecycle') {
+    // Not in the SDK's published union yet, but a real frame the 2.1.2xx CLI
+    // sends for every prompt it accepts, stamped with the uuid the host put on
+    // the message. States beyond the four known ones keep the unknown-type
+    // treatment, so a protocol that grows still leaves one row of evidence.
+    const commandUuid = string(value.command_uuid)
+    const state = string(value.state)
+    if (commandUuid !== undefined
+      && (state === 'queued' || state === 'started' || state === 'completed' || state === 'cancelled')) {
+      return [{ kind: 'command-lifecycle', commandUuid, state }]
+    }
   }
   const unknownType = String(value.type)
   return [{ kind: 'unknown', type: unknownType, title: `${CLAUDE_UNKNOWN_MESSAGE_PREFIX}${unknownType}`, detail: value }]

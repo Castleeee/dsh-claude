@@ -1838,7 +1838,7 @@ describe('Claude supervisor', () => {
 
   it('records an unknown message type once per session, not once per frame', async () => {
     // A type this package does not handle arrives in batches of identical frames
-    // (command_lifecycle did, five per turn). One row is evidence; the rest are
+    // (mirror errors did, five per turn). One row is evidence; the rest are
     // noise the transcript never draws.
     const transport = factory()
     const owner = fakeAgent()
@@ -1846,16 +1846,105 @@ describe('Claude supervisor', () => {
     const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
     const query = transport.queries[0]!
     query.push(init())
-    query.push({ type: 'command_lifecycle', state: 'queued' } as SDKMessage)
-    query.push({ type: 'command_lifecycle', state: 'running' } as SDKMessage)
+    query.push({ type: 'mirror_error', state: 'lost' } as SDKMessage)
+    query.push({ type: 'mirror_error', state: 'lost' } as SDKMessage)
     query.push({ type: 'future_message', value: 1 } as SDKMessage)
     query.push(result('done'))
     await collect(output)
     const notices = (await projection(runtime)).activities
       .filter(activity => String(activity.title).startsWith('Unknown Claude SDK message:'))
     expect(notices.map(activity => activity.title)).toEqual([
-      'Unknown Claude SDK message: command_lifecycle',
+      'Unknown Claude SDK message: mirror_error',
       'Unknown Claude SDK message: future_message',
+    ])
+    await runtime.dispose()
+  })
+
+  it('answers for a message pushed into a running turn, and stays quiet for the turn itself', async () => {
+    // The CLI books every prompt it accepts (queued → started → completed) under
+    // the uuid the host stamped on it. The prompt that opened the turn IS the
+    // turn, whose progress the transcript already draws; a message pushed in
+    // mid-turn has no other evidence anywhere, and this is the one thing that
+    // tells its sender Claude heard it.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    // Nothing drains the input stream in a test, so the prompts the host wrote
+    // are still buffered in order.
+    const reader = query.input[Symbol.asyncIterator]()
+    const opening = (await reader.next()).value!
+    expect(runtime.deliverSteering('dsh-session-1', 'actually, stop after this')).toBe('delivered')
+    const steered = (await reader.next()).value!
+    query.push({ type: 'command_lifecycle', command_uuid: opening.uuid, state: 'queued' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'queued' } as SDKMessage)
+    // An internal command the CLI books the same way is not the reader's message.
+    query.push({ type: 'command_lifecycle', command_uuid: 'internal-task-notification', state: 'queued' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'started' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'completed' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const rows = (await projection(runtime)).activities
+      .filter(activity => activity.commandUuid !== undefined)
+      .map(activity => [activity.commandUuid, activity.title, activity.phase])
+    expect(rows).toEqual([
+      [steered.uuid, 'Claude Code queued your message', 'updated'],
+      [steered.uuid, 'Claude Code picked up your queued message', 'updated'],
+      [steered.uuid, 'Claude Code ran your queued message', 'completed'],
+    ])
+    await runtime.dispose()
+  })
+
+  it('records a queued message the CLI dropped as a failure', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const reader = query.input[Symbol.asyncIterator]()
+    await reader.next()
+    runtime.deliverSteering('dsh-session-1', 'never mind')
+    const steered = (await reader.next()).value!
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'queued' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'cancelled' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const dropped = (await projection(runtime)).activities
+      .filter(activity => activity.commandUuid === steered.uuid)
+      .at(-1)
+    expect(dropped).toMatchObject({
+      title: 'Claude Code dropped your queued message',
+      phase: 'failed',
+      isError: true,
+    })
+    await runtime.dispose()
+  })
+
+  it('asks the CLI for hook frames and folds one invocation onto one row', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    expect(query.options.includeHookEvents).toBe(true)
+    query.push(init())
+    query.push({ type: 'system', subtype: 'hook_started', hook_id: 'h1', hook_name: 'lint', hook_event: 'PreToolUse' } as SDKMessage)
+    query.push({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'lint', hook_event: 'PreToolUse', exit_code: 0, output: 'ok' } as SDKMessage)
+    query.push({ type: 'system', subtype: 'hook_started', hook_id: 'h2', hook_name: 'guard', hook_event: 'Stop' } as SDKMessage)
+    query.push({ type: 'system', subtype: 'hook_response', hook_id: 'h2', hook_name: 'guard', hook_event: 'Stop', exit_code: 2, output: 'refused' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const rows = (await projection(runtime)).activities
+      .filter(activity => activity.hookId !== undefined)
+      .map(activity => [activity.hookId, activity.title, activity.phase, activity.isError === true])
+    expect(rows).toEqual([
+      ['h1', 'Claude Code hook lint', 'updated', false],
+      ['h1', 'Claude Code hook lint', 'completed', false],
+      ['h2', 'Claude Code hook guard', 'updated', false],
+      ['h2', 'Claude Code hook guard', 'failed', true],
     ])
     await runtime.dispose()
   })
@@ -2191,7 +2280,12 @@ describe('Claude supervisor', () => {
 
     await expect(projection(runtime)).resolves.toMatchObject({
       activities: expect.arrayContaining([
-        expect.objectContaining({ kind: 'warning', title: 'Claude API retry', phase: 'completed' }),
+        expect.objectContaining({
+          kind: 'warning',
+          title: 'Claude Code is retrying (1/10)',
+          summary: 'HTTP 529 · overloaded_error · retrying in 1s',
+          phase: 'completed',
+        }),
       ]),
     })
     await runtime.dispose()

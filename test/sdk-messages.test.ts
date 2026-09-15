@@ -265,4 +265,68 @@ describe('Claude SDK message normalization', () => {
     }))
     expect(blocked).toMatchObject([{ kind: 'status', title: 'Claude rate limit is blocking requests' }])
   })
+
+  it('reads a retry as a wait the user can understand', () => {
+    const retry = { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, retry_delay_ms: 4_800, error_status: 429, error: 'rate_limit_error' }
+    expect(normalizeSdkMessage(sdk(retry))).toEqual([{
+      kind: 'warning',
+      title: 'Claude Code is retrying (2/5)',
+      summary: 'HTTP 429 · rate_limit_error · retrying in 5s',
+      detail: retry,
+    }])
+    // A CLI that names neither count still says what it is doing.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'api_retry' })))
+      .toMatchObject([{ kind: 'warning', title: 'Claude Code is retrying' }])
+  })
+
+  it('folds a hook invocation onto one row and reports how it ended', () => {
+    const started = { type: 'system', subtype: 'hook_started', hook_id: 'h1', hook_name: 'format', hook_event: 'PostToolUse' }
+    expect(normalizeSdkMessage(sdk(started))).toEqual([{
+      kind: 'hook',
+      hookId: 'h1',
+      state: 'started',
+      hookName: 'format',
+      hookEvent: 'PostToolUse',
+    }])
+    const failed = { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'format', hook_event: 'PostToolUse', output: 'prettier: command not found', stderr: '', exit_code: 127 }
+    expect(normalizeSdkMessage(sdk(failed))).toEqual([{
+      kind: 'hook',
+      hookId: 'h1',
+      state: 'failed',
+      hookName: 'format',
+      hookEvent: 'PostToolUse',
+      exitCode: 127,
+      output: 'prettier: command not found',
+    }])
+    const passed = { type: 'system', subtype: 'hook_response', hook_id: 'h2', hook_name: 'format', hook_event: 'PostToolUse', output: 'ok', exit_code: 0 }
+    expect(normalizeSdkMessage(sdk(passed))).toEqual([{
+      kind: 'hook',
+      hookId: 'h2',
+      state: 'completed',
+      hookName: 'format',
+      hookEvent: 'PostToolUse',
+      exitCode: 0,
+      output: 'ok',
+    }])
+    // Progress frames stay telemetry: they carry no lifecycle of their own.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'hook_progress', hook_id: 'h1', hook_name: 'format', output: 'chunk' })))
+      .toEqual([{ kind: 'progress', subtype: 'hook_progress' }])
+    // A response with no id to fold on still reports a failure, because a hook
+    // that fails can block the turn.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'hook_response', hook_name: 'format', hook_event: 'PostToolUse', output: 'boom', exit_code: 2 })))
+      .toMatchObject([{ kind: 'warning', title: 'Claude Code hook format' }])
+  })
+
+  it('reads a prompt the CLI accepted and answers for it by uuid', () => {
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'queued' })))
+      .toEqual([{ kind: 'command-lifecycle', commandUuid: 'p1', state: 'queued' }])
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'completed' })))
+      .toEqual([{ kind: 'command-lifecycle', commandUuid: 'p1', state: 'completed' }])
+    // A state this package does not know keeps the unknown-type treatment
+    // rather than being silently swallowed.
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'rewound' })))
+      .toMatchObject([{ kind: 'unknown', type: 'command_lifecycle' }])
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', state: 'queued' })))
+      .toMatchObject([{ kind: 'unknown', type: 'command_lifecycle' }])
+  })
 })
