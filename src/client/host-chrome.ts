@@ -107,23 +107,20 @@ const CLAUDE_SESSION = `body[${CLAUDE_SESSION_ATTRIBUTE}]`
  *  system prompt, DSH's tool mirrors and the messages DSH can see — which for a
  *  Claude Session is none of the context Claude Code actually holds.
  *
- *  `ClaudeContextMeter` draws the same ring from the CLI's own report. Within
- *  the session mark: the Host's ring goes, and this one takes the seat it had.
+ *  `ClaudeContextMeter` draws the same ring from the CLI's own report, from the
+ *  same seat — `conversation.composer.dock` — and needs no DOM move: the dock
+ *  row is a centred flex row and the entry's `order` seats the ring after the
+ *  session statistics, which is where the Host's own meter sits. The Host's ring
+ *  goes; this one is already there.
  *
- *  That seat needs no DOM move. The slot anchor wrapping this plugin's meter is
- *  `display:contents`, so the ring is already a flex item of its row and `order`
- *  places it where the Host's meter sat.
- *
- *  Both rows are swept because the Host moved the meter between them: the
- *  trailing row through 2.0.9, the dock row from 0.2.0. The order rules stay
- *  bound to the trailing row on purpose — that is the row this plugin's meter
- *  registers into (`conversation.input.right`), whichever row the Host's own
- *  has moved to. */
+ *  Both rows are swept, because the Host moved the meter between them: the
+ *  trailing row through 2.0.9, the dock row from 0.2.0 (where it is a sibling of
+ *  the `conversation.composer.dock` render rather than of the model seat). Only
+ *  the stand-down is row-dependent — nothing here reorders a row, so a Host that
+ *  moves the meter again takes the ring back rather than losing a control. */
 const CONTEXT_METER_CSS = [
   ...[COMPOSER_TRAILING, COMPOSER_DOCK].flatMap(row =>
     HOST_METER_SELECTORS.map(selector => `${CLAUDE_SESSION} ${row}>${selector}{display:none}`)),
-  `${CLAUDE_SESSION} ${COMPOSER_TRAILING} [data-dsh-claude-context-meter]{order:1}`,
-  `${CLAUDE_SESSION} ${COMPOSER_TRAILING}>[class$="_primary"]{order:2}`,
 ].join('')
 
 /** The Host's own statistics row — the turn/step and token pills above the

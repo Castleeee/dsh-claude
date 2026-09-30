@@ -57,13 +57,16 @@ describe('host chrome suppression', () => {
     }
   })
 
-  it('leaves this plugin its ring in the seat the Host meter held', () => {
-    // The slot anchor around the ring is `display:contents`, so the ring is a
-    // flex item of the composer's row: `order` puts it straight after the model
-    // seat and straight before the submit buttons, which is where the Host's
-    // meter sat.
-    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"]) [data-dsh-claude-context-meter]{order:1}`)
-    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"])>[class$="_primary"]{order:2}`)
+  it('reorders nothing in the composer, leaving the ring its slot order', () => {
+    // This plugin's ring now registers on `conversation.composer.dock`, the row
+    // the Host's meter moved to in 0.2.0, and the dock is a centred flex row, so
+    // the entry's own `order` seats it after the session statistics. Nothing in
+    // the CSS readjusts a row any more: every rule here stands a Host control
+    // down, and one that also reordered would be a second thing to keep in step
+    // with the Host's markup.
+    const rules = HOST_CHROME_CSS.split('}').map(part => part.trim()).filter(Boolean)
+    expect(rules.filter(rule => rule.includes('order:')).length).toBe(0)
+    expect(rules.every(rule => rule.endsWith('{display:none') || !rule.includes('data-dsh-claude-context-meter'))).toBe(true)
   })
 
   it('stands the Host statistics row down for this preset', () => {

@@ -465,16 +465,17 @@ ${error.stack ?? ''}`
       }
     },
   }, ClaudePromptRefineAction))
-  // The composer's own context meter seat, immediately before the submit
-  // button: the Host's meter reads a request it assembled, and for this preset
-  // the context lives inside Claude Code, so its own report is the only honest
-  // source. The entry renders nothing for any other session — its absence is
-  // what leaves the Host's meter in place there.
-  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
-    name: 'conversation.input.right',
+  // The composer's dock row, below the card: the Host moved its own meter there
+  // in 0.2.0 (through 2.0.9 it sat in the trailing row, beside the model seat),
+  // so this ring moves with it rather than sitting where the Host's no longer
+  // is. The dock row is a centred flex row — `order` 10 seats the ring after the
+  // session statistics, which is the place the Host's own meter holds. The entry
+  // renders nothing for any other session, and the Host's meter is stood down by
+  // `host-chrome` for as long as this one is on screen.
+  ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+    name: 'conversation.composer.dock',
     id: 'claude-context-meter',
-    // Before the submit action, beside the model selector.
-    order: 30,
+    order: 10,
     locale: namespace,
     inject: (): ClaudeContextMeterInjected => ({ t }),
   }, ClaudeContextMeter))
