@@ -113,7 +113,7 @@ export type NormalizedSdkMessage =
     parentToolUseId?: string
   }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
-  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[]; apiMs?: number; modelCalls?: number }
+  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[]; apiMs?: number; modelCalls?: number }
   | { kind: 'protocol-error'; title: string; detail: unknown }
   /** Claude Code's guess at the user's next prompt; arrives after `result`. */
   | { kind: 'prompt-suggestion'; text: string }
@@ -560,6 +560,15 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       ? value.errors.filter((item): item is string => typeof item === 'string')
       : undefined
     const terminalReason = string(value.terminal_reason)
+    // The SDK's own account of why the turn ended. On a failure this is where
+    // the reason actually lives: an API error arrives as subtype:"success" with
+    // is_error:true and NO `errors` array, carrying its text in `result` (for
+    // example "API Error: 500 …"), which a success-only read threw away — the
+    // row then said nothing but the terminal reason, which is a category rather
+    // than a cause.
+    const failureDetail = !success && typeof value.result === 'string' && value.result.trim().length > 0
+      ? value.result
+      : undefined
     const userMessageUuid = string(value.user_message_uuid)
     // User sends the CLI had not reached when it produced this result: non-zero
     // means at least one more turn follows without further input, so this result
@@ -589,6 +598,7 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       success,
       ...(success && typeof value.result === 'string' ? { text: value.result } : {}),
       ...(errors === undefined ? {} : { errors }),
+      ...(failureDetail === undefined ? {} : { failureDetail }),
       ...(terminalReason === undefined ? {} : { terminalReason }),
       ...(permissionDenials === undefined || permissionDenials.length === 0 ? {} : { permissionDenials }),
       usage: resultUsage(value),

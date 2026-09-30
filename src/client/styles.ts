@@ -3855,11 +3855,17 @@ export const permissionSelectRowNameClass = 'dshClaudePermissionSelectRowName'
 export const permissionSelectRowHintClass = 'dshClaudePermissionSelectRowHint'
 
 /** A mode row: its name, and under it the one line that says what the mode
- *  does. In the row rather than a native title, which the Host never draws. */
+ *  does. In the row rather than a native title, which the Host never draws.
+ *
+ *  The row carries the width, not the hint. The Host's menu card grows with its
+ *  content between a compact and a readable bound, so a row free to shrink to
+ *  nothing leaves the card on its 144px floor and wraps every hint into a
+ *  column of fragments. A floor here is what makes the card take the width the
+ *  sentences actually need. */
 export const permissionSelectRowCss = `
-.${permissionSelectRowClass} { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.${permissionSelectRowClass} { display: flex; flex-direction: column; gap: 1px; min-width: 264px; }
 .${permissionSelectRowNameClass} { white-space: nowrap; }
-.${permissionSelectRowHintClass} { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--dsw-alias-label-tertiary); white-space: normal; max-width: 260px; }
+.${permissionSelectRowHintClass} { font-size: 12px; line-height: 16px; font-weight: 400; color: var(--dsw-alias-label-tertiary); white-space: normal; max-width: 264px; }
 `
 
 export const promptSuggestionAttribute = 'data-dsh-claude-suggestion'

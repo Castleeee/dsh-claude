@@ -2352,7 +2352,13 @@ export class ClaudeSupervisor {
       }
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
-      const message = result.errors?.join('\n')
+      // Most specific first. `errors` is what the CLI collected; `failureDetail`
+      // is the SDK's own account of the failure, and for an API error it is the
+      // only place the cause appears. The terminal reason is a category, so it
+      // is the last resort rather than the answer.
+      const collected = result.errors?.filter(entry => entry.trim().length > 0).join('\n')
+      const message = (collected !== undefined && collected.length > 0 ? collected : undefined)
+        ?? result.failureDetail
         ?? (result.terminalReason !== undefined ? `Claude Code failed the turn (${result.terminalReason})` : 'Claude Code failed the turn')
       await this.#appendSafely(active, {
         kind: 'error',
