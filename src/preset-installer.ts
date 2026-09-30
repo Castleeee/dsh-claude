@@ -7,6 +7,31 @@ import { CLAUDE_CODE_PRESET_ID } from './constants.ts'
 
 export const MANAGED_PRESET_FILES = ['agent.cordis.yml', 'preset.yml'] as const
 
+/**
+ * Bodies of `preset.yml` shipped by earlier versions of this template.
+ *
+ * Unlike `agent.cordis.yml`, this file carries no installer-owned route — it is
+ * name, description and order — so nothing about it says whether the copy on
+ * disk was written by an installer or edited by the user. The protection below
+ * therefore treats "not mine" as "the user's", which misfires the moment the
+ * shipped name or description changes: an install made from the previous body
+ * looks like a hand edit, the installer throws, and the preset keeps showing
+ * the old name in the picker with no hint why.
+ *
+ * Listing the previous body makes that upgrade converge instead. A fork that
+ * renames or re-describes the preset adds its outgoing body here; the installer
+ * still refuses anything that is neither the current body nor a listed one.
+ */
+const LEGACY_PRESET_YML = [
+  [
+    '# Shipped by dsh-claude. Copy this system preset under a new id to customize it.',
+    'name: Claude',
+    'description: Use the local Claude Code as the complete agent runtime inside DSH.',
+    'order: 10',
+    '',
+  ].join('\n'),
+]
+
 /** Package specifier kept in the installed template. DSH Desktop 2.0.4 resolves
  * it through the active profile package factory, so the preset route and client
  * module share one Loader source. An absolute built entry would register a
@@ -54,7 +79,14 @@ async function managedContents(paths: ManagedPresetPaths): Promise<ManagedConten
     const nameRow = `name: '${PRESET_ROUTE_PACKAGE_SPECIFIER}'`
     const legacyNameRow = `name: ${PRESET_ROUTE_PACKAGE_SPECIFIER}`
     if (file !== 'agent.cordis.yml' || !source.includes(nameRow)) {
-      return { file, content: source, legacy: [], isLegacy: () => false }
+      return {
+        file,
+        content: source,
+        // Only this file has an install history to converge; the route file's
+        // legacy shapes are recognized structurally by `isLegacy` below.
+        legacy: file === 'preset.yml' ? LEGACY_PRESET_YML : [],
+        isLegacy: () => false,
+      }
     }
     return {
       file,

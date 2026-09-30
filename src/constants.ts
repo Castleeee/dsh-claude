@@ -23,7 +23,15 @@ export const SDK_VERSION = '0.3.247'
  *  tens of thousands of them. The transcript never draws a plain status row,
  *  and each durable row costs a full sidecar rewrite, so these are consumed as
  *  progress and kept out of the activity log. */
-export const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(['thinking_tokens'])
+export const CLAUDE_PROGRESS_SUBTYPES: ReadonlySet<string> = new Set(['thinking_tokens', 'hook_progress'])
+
+/** Message types this package now handles that it once reported as unknown.
+ *
+ *  Their `Unknown Claude SDK message: …` rows are stale evidence from before
+ *  the handling existed: nothing reads them, and a projection that still holds
+ *  them would keep one line of noise per session forever. Dropped on the way
+ *  in, exactly like a progress row. */
+export const CLAUDE_SETTLED_MESSAGE_TYPES: ReadonlySet<string> = new Set(['command_lifecycle', 'tool_progress', 'hook_progress'])
 
 /** Durable status title this package writes for a system subtype. Shared by the
  *  writer and by the filter that drops a progress subtype's rows, so the two can
@@ -40,7 +48,6 @@ export const CLAUDE_UNKNOWN_MESSAGE_PREFIX = 'Unknown Claude SDK message: '
  *  turn a Claude session is running. That turn owns the only process that can
  *  read it into Claude at the next model step. */
 export const CLAUDE_STEERING_SERVICE = 'claudeSteering'
-
 export const CLAUDE_DOCTOR_PATH = '/plugins/dsh-claude/doctor'
 export const CLAUDE_CLIENT_DIAGNOSTICS_PATH = '/plugins/dsh-claude/client-diagnostics'
 export const CLAUDE_UPDATE_CHECK_PATH = '/plugins/dsh-claude/update/check'
@@ -57,6 +64,8 @@ export const CLAUDE_REPOSITORY_FILE_PATH = '/plugins/dsh-claude/repository/file'
 export const CLAUDE_JIRA_PATH = '/plugins/dsh-claude/jira'
 export const CLAUDE_ASK_PATH = '/plugins/dsh-claude/ask'
 export const CLAUDE_REWIND_PATH = '/plugins/dsh-claude/rewind'
+export const CLAUDE_FILE_REWIND_PATH = '/plugins/dsh-claude/rewind/files'
+export const CLAUDE_TASK_STOP_PATH = '/plugins/dsh-claude/tasks/stop'
 export const CLAUDE_BACKGROUND_TASK_PATH = '/plugins/dsh-claude/background-task'
 export const CLAUDE_PERMISSION_MODE_PATH = '/plugins/dsh-claude/permission-mode'
 export const CLAUDE_PLAN_FEEDBACK_PATH = '/plugins/dsh-claude/plan/feedback'

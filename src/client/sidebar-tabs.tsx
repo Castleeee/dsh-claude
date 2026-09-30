@@ -6,6 +6,7 @@ import { ClaudeDiffPanel, type ClaudeDiffPanelInjected, type ClaudeDiffPanelProp
 import { ClaudePlanPanel, type ClaudePlanPanelInjected, type ClaudePlanPanelProps } from './ClaudePlanPanel.tsx'
 import { ClaudePullRequestsPanel, type ClaudePullRequestsPanelInjected } from './ClaudePullRequestsPanel.tsx'
 import { ClaudeTeammatePanel, type ClaudeTeammatePanelInjected, type ClaudeTeammatePanelProps } from './ClaudeTeammatePanel.tsx'
+import { ClaudeTasksPanel, type ClaudeTasksPanelInjected, type ClaudeTasksPanelProps } from './ClaudeTasksPanel.tsx'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 
 /**
@@ -28,6 +29,7 @@ import type { ClaudeCodeSettingsKey } from './locales.ts'
 export const CLAUDE_TAB_KINDS = {
   diff: 'claude-diff',
   plan: 'claude-plan',
+  tasks: 'claude-tasks',
   overview: 'claude-overview',
   teammate: 'claude-teammate',
 } as const
@@ -38,6 +40,8 @@ export interface ClaudeTabParams {
   readonly initialRoot?: string
   /** Teammate task id the teammate tab shows. */
   readonly teammate?: string
+  /** Turn the tasks tab is scoped to; absent means the whole session. */
+  readonly turn?: number
 }
 
 /** What every tab body is handed beside the Host's standard props. */
@@ -68,6 +72,9 @@ export interface ClaudeSidebarTabOptions {
   namespace: 'settings.claude-code'
   /** Per-session extras for the diff body; the rest comes from the tab. */
   diffFace: (sessionId: string) => Pick<ClaudeDiffPanelInjected, 'submitPrompt'>
+  /** Per-session extras for the tasks body: the stop control, when the Host
+   *  exposes one. */
+  tasksFace?: (sessionId: string) => Pick<ClaudeTasksPanelInjected, 'stopTask'>
   /** Per-session extras for the overview body, or nothing when the session
    *  list is not available and the body should stay empty. */
   overviewFace: (sessionId: string) => Omit<ClaudePullRequestsPanelInjected, 'closeDetails'> | undefined
@@ -154,6 +161,11 @@ export function ClaudeTeammateTab({ useTabInfo, noteTab, ...panel }: TabBodyProp
   return <ClaudeTeammatePanel {...panel} closeDetails={closeDetails} taskId={params.teammate ?? ''} />
 }
 
+export function ClaudeTasksTab({ useTabInfo, noteTab, ...panel }: TabBodyProps<Omit<ClaudeTasksPanelProps, 'turn'>>) {
+  const { closeDetails, params } = useClaudeTab(useTabInfo, noteTab)
+  return <ClaudeTasksPanel {...panel} closeDetails={closeDetails} turn={params.turn ?? 0} />
+}
+
 export function ClaudeOverviewTab({ useTabInfo, noteTab, face }: ClaudeTabFace & {
   useTabInfo: UseSidebarRightTabInfo
   face: Omit<ClaudePullRequestsPanelInjected, 'closeDetails'> | undefined
@@ -175,6 +187,7 @@ export function registerClaudeSidebarTabs(ctx: ClientContext, options: ClaudeSid
   const titles: Record<ClaudeTabKind, () => string> = {
     [CLAUDE_TAB_KINDS.diff]: () => t('diffTabTitle'),
     [CLAUDE_TAB_KINDS.plan]: () => t('planPanelTitle'),
+    [CLAUDE_TAB_KINDS.tasks]: () => t('tasksPanel'),
     [CLAUDE_TAB_KINDS.overview]: () => t('overviewTitle'),
     [CLAUDE_TAB_KINDS.teammate]: () => t('teammatePanelTitle'),
   }
@@ -209,6 +222,14 @@ export function registerClaudeSidebarTabs(ctx: ClientContext, options: ClaudeSid
       { t, ...faceFor(CLAUDE_TAB_KINDS.teammate, sessionId) }
     ),
   }, ClaudeTeammateTab))
+  ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab',
+    key: CLAUDE_TAB_KINDS.tasks,
+    locale: namespace,
+    inject: (sessionId: string): Omit<ClaudeTasksPanelInjected, 'closeDetails' | 'turn'> & ClaudeTabFace => (
+      { t, sessionId, ...faceFor(CLAUDE_TAB_KINDS.tasks, sessionId), ...options.tasksFace?.(sessionId) }
+    ),
+  }, ClaudeTasksTab))
   ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab',
     key: CLAUDE_TAB_KINDS.overview,

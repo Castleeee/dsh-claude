@@ -107,6 +107,22 @@ export function presentable(activity: ClaudeActivityEvent): boolean {
       return activity.summary !== undefined && activity.summary.length > 0
     case 'thinking':
       return activity.summary !== undefined && activity.summary.length > 0
+    case 'question':
+      // A question is a state the reader has to act on, so the transcript keeps
+      // both halves of it: that Claude asked, and that it got an answer.
+      return true
+    case 'status':
+      // Most status rows are progress pings — a turn starting, a request being
+      // issued — that the transcript deliberately keeps out. Three kinds are
+      // states a reader has to see: a turn that ended badly (cancelled, failed
+      // before submission, cancelled with its process reset), one holding for
+      // background work before it can finish, and a row that carries an
+      // identity the reader asked for — their own mid-turn message, or a hook
+      // running inside the turn, neither of which leaves any other trace.
+      return activity.phase === 'failed'
+        || activity.phase === 'updated'
+        || activity.commandUuid !== undefined
+        || activity.hookId !== undefined
     default:
       // 'compaction' stays out of the disclosure rows on purpose: the
       // transcript draws it as a divider instead, in `transcriptItemsForStep`.
@@ -149,6 +165,10 @@ function foldKey(
   if (value.kind === 'subagent' && value.parentToolUseId !== undefined) return `task-${value.parentToolUseId}`
   if (value.kind === 'subagent' && value.taskId !== undefined) return `subagent-task-${value.taskId}`
   if (value.kind === 'subagent' && value.toolUseId !== undefined) return `call-${value.toolUseId}`
+  // A prompt or a hook reports a lifecycle, so its later frames re-describe the
+  // one row it opened rather than stacking a row per state.
+  if (value.commandUuid !== undefined) return `cmd-${value.commandUuid}`
+  if (value.hookId !== undefined) return `hook-${value.hookId}`
   // The CLI announces every retry of one failing request, up to ten of them.
   // They are one request being re-described, so they share a row and the
   // latest attempt count replaces the last instead of stacking underneath it.
@@ -218,7 +238,42 @@ function foldedRows(
     })
   }
   const taskStatus = new Map(tasks.map(task => [task.taskId, task.status]))
-  return new Map([...rows].map(([id, row]) => [id, settled(row, taskStatus)]))
+  const answeredQuestions = answeredQuestionIds(activities)
+  return new Map([...rows].map(([id, row]) => [id, answerSettled(settled(row, taskStatus), answeredQuestions)]))
+}
+
+/**
+ * Tool calls a question was answered for.
+ *
+ * A question is deliberately two rows — that Claude asked, and that it was
+ * answered — and `foldKey` gives each activity its own `act-…` key, so the
+ * completion never lands on the row the start opened. That is fine for the
+ * text, but not for the state: the asking row is `started`, `running` is what
+ * draws its spinner, and nothing will ever re-describe it. Left alone it pulses
+ * for the rest of the session, on a question that was answered minutes ago.
+ *
+ * Reading the answer out of the activity stream is what settles it: the caller
+ * that owns the answer is the Host, and this side has nothing to ask.
+ */
+function answeredQuestionIds(activities: readonly ClaudeActivityEvent[]): ReadonlySet<string> {
+  const answered = new Set<string>()
+  for (const value of activities) {
+    if (value.kind !== 'question' || value.toolUseId === undefined) continue
+    if (value.phase === 'started' || value.phase === 'updated') continue
+    answered.add(value.toolUseId)
+  }
+  return answered
+}
+
+/** Settle the asking row of a question that already has a terminal counterpart. */
+function answerSettled(
+  row: ClaudeActivityChatData,
+  answered: ReadonlySet<string>,
+): ClaudeActivityChatData {
+  if (!row.running || row.activity.kind !== 'question') return row
+  const toolUseId = row.activity.toolUseId
+  if (toolUseId === undefined || !answered.has(toolUseId)) return row
+  return { ...row, running: false, activity: { ...row.activity, phase: 'completed' } }
 }
 
 function inputRecord(detail: string | undefined): Record<string, unknown> | undefined {
@@ -387,6 +442,21 @@ function toolDescription(
       completed = 'Proposed a plan'
       failedAction = 'propose a plan'
       break
+    // The list itself is drawn as a checklist in the card body; the row says
+    // how far through it Claude is, which is the only part a collapsed row can
+    // carry. Counted the way the checklist draws it — an entry with no content
+    // is not a task — so the two can never disagree.
+    case 'TodoWrite': {
+      const rows = Array.isArray(input?.todos) ? input.todos : []
+      const drawn = rows.filter((item): item is Record<string, unknown> => (
+        item !== null && typeof item === 'object' && !Array.isArray(item) && inputString(item as Record<string, unknown>, 'content') !== undefined
+      ))
+      completed = drawn.length === 0
+        ? 'Updated todos'
+        : `Updated todos (${drawn.filter(item => item.status === 'completed').length}/${drawn.length} done)`
+      failedAction = 'update todos'
+      break
+    }
     case ASK_USER_QUESTION: {
       // The row a reader scans should say what was decided, not the tool name
       // twice: one answered question reads as the question and its answer.
@@ -767,7 +837,15 @@ export const claudeTurnDefinition: ConversationNodeDefinition<ClaudeTurnProjecti
 }
 
 /** Only Claude-produced turns render the sidecar-backed tail. The turn tail is
- *  a list Slot since Host 0.1.7, so every entry sees every turn and filters here. */
+ *  a list Slot since Host 0.1.7, so every entry sees every turn and filters
+ *  here.
+ *
+ *  Nothing about the owner is assumed: the Host renders this slot for turns
+ *  the plugin never stamped, and a store that has not received the marker yet
+ *  hands back a turn object with no `data` at all. A missing marker is simply
+ *  not a Claude turn. */
 export function selectClaudeTurn(owner: Pick<TurnTailOwnerProps, 'turn'>): ClaudeTurnMarker | null {
-  return owner.turn.data.get('claudeCode') ?? null
+  const data = (owner.turn as { data?: { get?(key: string): ClaudeTurnMarker | undefined } } | undefined)?.data
+  if (data === undefined || typeof data.get !== 'function') return null
+  return data.get('claudeCode') ?? null
 }

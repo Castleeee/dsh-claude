@@ -18,10 +18,20 @@ import {
   transcriptItemsForStep,
 } from '../src/client/conversation-sidecar.ts'
 import {
+  activitiesForTask,
+  ClaudeTasksPanel,
+  summarizeTurnTasks,
+  tasksForTurn,
+  visibleTaskGroups,
+} from '../src/client/ClaudeTasksPanel.tsx'
+import { ClaudeActivityTail } from '../src/client/ClaudeActivityTail.tsx'
+import { ClaudeContextMeter, ClaudeContextPanel, contextCategoryColor } from '../src/client/ClaudeContextMeter.tsx'
+import {
   ClaudeActivityNode,
   ClaudeCompactionDivider,
   ClaudeTranscriptToolGroup,
   ClaudeTranscriptToolItem,
+  todoItems,
 } from '../src/client/ClaudeActivityNode.tsx'
 
 const taskCall: ClaudeActivityEvent = {
@@ -208,6 +218,58 @@ async function projectConversation(events: readonly unknown[]): Promise<TestProj
 }
 
 describe('Claude sidecar conversation projection', () => {
+  it('shows the states a reader has to act on, and not the progress pings', () => {
+    // A cancelled turn and a pending question are the two states the user has to
+    // see: without them an interrupt looks like it was ignored, and a question
+    // looks like Claude is still thinking. The pings around them stay hidden.
+    const activities: ClaudeActivityEvent[] = [
+      { turn: 1, step: 1, ordinal: 0, kind: 'status', phase: 'started', title: 'Claude Code turn started' },
+      { turn: 1, step: 1, ordinal: 1, kind: 'status', phase: 'completed', title: 'Claude Code requesting' },
+      { turn: 1, step: 1, ordinal: 2, kind: 'question', phase: 'started', title: 'Claude asked a question', summary: 'Which theme?' },
+      { turn: 1, step: 1, ordinal: 3, kind: 'status', phase: 'updated', title: 'Claude Code is waiting for background tasks' },
+      { turn: 1, step: 1, ordinal: 4, kind: 'status', phase: 'failed', title: 'Claude Code turn cancelled' },
+      { turn: 1, step: 1, ordinal: 5, kind: 'status', phase: 'completed', title: 'Claude Code turn completed' },
+    ]
+    expect(lifecycleRows(activities, 1, 1).map(row => row.activity.title)).toEqual([
+      'Claude asked a question',
+      'Claude Code is waiting for background tasks',
+      'Claude Code turn cancelled',
+    ])
+  })
+
+  it('stops pulsing the asking row of a question that was answered', () => {
+    const asking: ClaudeActivityEvent = {
+      turn: 1,
+      step: 1,
+      ordinal: 0,
+      kind: 'question',
+      phase: 'started',
+      toolUseId: 'tool-1',
+      title: 'Claude asked a question',
+      summary: 'Which file?',
+    }
+    // Open: the row pulses, which is the state the reader has to act on.
+    expect(lifecycleRows([asking], 1, 1).map(row => row.running)).toEqual([true])
+
+    // The answer arrives as its own activity — that half is a row of its own on
+    // purpose — so the asking row has to be settled from the stream. Nothing
+    // else will ever re-describe it, and left running it pulses for the rest of
+    // the session on a question answered minutes ago.
+    const answered: ClaudeActivityEvent = {
+      ...asking,
+      ordinal: 1,
+      phase: 'completed',
+      summary: 'Answered in DeepSeek Harness · hello.md',
+    }
+    const rows = lifecycleRows([asking, answered], 1, 1)
+    expect(rows.map(row => row.running)).toEqual([false, false])
+    expect(rows.map(row => row.activity.phase)).toEqual(['completed', 'completed'])
+    expect(rows.map(row => row.activity.summary)).toEqual([
+      'Which file?',
+      'Answered in DeepSeek Harness · hello.md',
+    ])
+  })
+
   it('folds a task call, its nested subagent calls, and its result into one group entry', () => {
     const items = transcriptItemsForStep([taskCall, nestedStarted, nestedDone, taskDone], 2, 1)
     expect(items).toHaveLength(1)
@@ -746,7 +808,197 @@ describe('Claude sidecar conversation projection', () => {
     })])
   })
 
-  it('mounts live Claude activity at step/start and keeps it after turn/end', async () => {
+  it('selects task groups, client-local clear state, activity, and origin-turn launchers', () => {
+    const tasks = [
+      { taskId: 'running-2', description: 'two', status: 'running' as const, originTurn: 2, backgrounded: true },
+      { taskId: 'running-3', description: 'three', status: 'running' as const, originTurn: 3, subagentType: 'Explore' },
+      { taskId: 'done', description: 'done', status: 'completed' as const, originTurn: 2, subagentType: 'general-purpose' },
+    ]
+    expect(visibleTaskGroups(tasks, new Set())).toMatchObject({
+      running: [{ taskId: 'running-2' }, { taskId: 'running-3' }],
+      finished: [{ taskId: 'done' }],
+    })
+    expect(visibleTaskGroups(tasks, new Set(['done'])).finished).toEqual([])
+    expect(tasksForTurn(tasks, 2).map(task => task.taskId)).toEqual(['running-2', 'done'])
+    expect(summarizeTurnTasks(tasksForTurn(tasks, 2))).toEqual({
+      state: 'running', count: 2, running: 1, failed: 0, completed: 1,
+    })
+    expect(summarizeTurnTasks([{ taskId: 'failed', description: 'failed', status: 'failed' }])).toEqual({
+      state: 'failed', count: 1, running: 0, failed: 1, completed: 0,
+    })
+    expect(summarizeTurnTasks([{ taskId: 'done', description: 'done', status: 'completed' }])).toEqual({
+      state: 'completed', count: 1, running: 0, failed: 0, completed: 1,
+    })
+    const activities = [
+      { ...nestedStarted, taskId: 'running-2' },
+      { ...nestedDone, taskId: 'running-3' },
+    ]
+    expect(activitiesForTask(activities, 'running-2')).toEqual([activities[0]])
+  })
+
+  it('renders a compact turn-bound Tasks launcher only for background work and subagents', () => {
+    const render = (tasks: readonly unknown[], turn = 2) => renderToStaticMarkup(createElement(ClaudeActivityTail, {
+      turn: { data: new Map([['claudeCode', { turn }]]) },
+      t: ((key: string, params?: Record<string, unknown>) => `${key}:${JSON.stringify(params ?? {})}`) as never,
+      useClaudeProjection: ((selector: (projection: unknown) => unknown) => selector({ owned: true, activities: [], tasks: { tasks } })) as never,
+    } as never))
+    expect(render([])).toBe('')
+    expect(render([{ taskId: 'other', description: 'other', status: 'running', originTurn: 3, backgrounded: true }])).toBe('')
+    expect(render([{ taskId: 'foreground', description: 'foreground', status: 'completed', originTurn: 2, taskType: 'local_bash' }])).toBe('')
+    const running = render([{ taskId: 'running', description: 'run', status: 'running', originTurn: 2, backgrounded: true }])
+    expect(running).toContain('tasksTurnRunning')
+    expect(running).toContain('tasksOpen')
+    expect(running).toContain('border-radius:999px')
+    expect(running).toContain('justify-content:flex-start')
+    expect(running).toContain('tasksTurnRunning:{&quot;count&quot;:1}</span>')
+    expect(running).toContain('dsh-claude-act-running')
+    const mixed = render([
+      { taskId: 'running', description: 'run', status: 'running', originTurn: 2, backgrounded: true },
+      { taskId: 'done', description: 'done', status: 'completed', originTurn: 2, subagentType: 'Explore' },
+      { taskId: 'failed', description: 'failed', status: 'failed', originTurn: 2, subagentType: 'general-purpose' },
+    ])
+    expect(mixed).toContain('tasksTurnRunning:{&quot;count&quot;:1}</span>')
+    const done = render([{ taskId: 'done', description: 'done', status: 'completed', originTurn: 2, subagentType: 'Explore' }])
+    expect(done).toContain('tasksTurnCompleted')
+    expect(done).not.toContain('dsh-claude-act-running')
+    expect(render([{ taskId: 'failed', description: 'failed', status: 'failed', originTurn: 2, subagentType: 'general-purpose' }])).toContain('tasksTurnFailed')
+  })
+
+  it('shows a live pill only on the turn the state names', () => {
+    const render = (live: unknown, turn = 2) => renderToStaticMarkup(createElement(ClaudeActivityTail, {
+      turn: { data: new Map([['claudeCode', { turn }]]) },
+      t: ((key: string, params?: Record<string, unknown>) => `${key}:${JSON.stringify(params ?? {})}`) as never,
+      useClaudeProjection: ((selector: (projection: unknown) => unknown) => selector({ owned: true, activities: [], live })) as never,
+    } as never))
+    expect(render(undefined)).toBe('')
+    // A settled turn's footer is still mounted: only the turn the state belongs
+    // to draws it.
+    expect(render({ turn: 3, state: 'thinking' })).toBe('')
+    const thinking = render({ turn: 2, state: 'thinking' })
+    expect(thinking).toContain('liveThinking')
+    expect(thinking).toContain('dsh-claude-act-running')
+    expect(render({ turn: 2, state: 'waiting' })).toContain('liveWaiting')
+    // Compaction is the one blocking step Claude prints nothing for.
+    expect(render({ turn: 2, state: 'compacting' })).toContain('liveCompacting')
+    const tool = render({ turn: 2, state: 'tool', label: 'Bash', elapsedMs: 4_200 })
+    expect(tool).toContain('liveTool:{&quot;tool&quot;:&quot;Bash&quot;}')
+    expect(tool).toContain('4.2s')
+    // Under a second there is no clock worth showing.
+    expect(render({ turn: 2, state: 'tool', label: 'Bash', elapsedMs: 400 })).not.toContain('400')
+  })
+
+  it('draws Claude\'s own context composition in the composer seat', () => {
+    const projection = {
+      owned: true,
+      activities: [{ turn: 3, step: 1, ordinal: 9, kind: 'compaction', detail: JSON.stringify({ trigger: 'auto', preTokens: 72_734, postTokens: 1_925, durationMs: 8_958 }) }],
+      contextUsage: {
+        model: 'claude-opus-5[1M]',
+        totalTokens: 540_000,
+        maxTokens: 1_000_000,
+        percentage: 54,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 967_000,
+        categories: [
+          // The CLI reports no color of its own: this is what its real report
+          // carries for every category, which is why the panel has to separate
+          // them itself.
+          { name: 'System prompt', tokens: 4_600, color: '#8b95a5' },
+          { name: 'System tools', tokens: 8_700, color: '#8b95a5' },
+          { name: 'Messages', tokens: 445_000, color: '#8b95a5' },
+          { name: 'Free space', tokens: 460_000, color: '#8b95a5' },
+        ],
+        messageBreakdown: {
+          toolCallTokens: 40_000,
+          toolResultTokens: 380_000,
+          attachmentTokens: 0,
+          assistantMessageTokens: 20_000,
+          userMessageTokens: 5_000,
+          redirectedContextTokens: 0,
+          unattributedTokens: 0,
+        },
+      },
+    }
+    const t = ((key: string, params?: Record<string, unknown>) => `${key}:${JSON.stringify(params ?? {})}`) as never
+    const render = (value: Record<string, unknown>) => renderToStaticMarkup(createElement(ClaudeContextMeter, {
+      t,
+      useClaudeProjection: ((selector: (projection: unknown) => unknown) => selector(value)) as never,
+    }))
+    // Nothing for a session this plugin does not own: the Host keeps its meter.
+    expect(render({ owned: false, activities: [] })).toBe('')
+    expect(render({ owned: true, activities: [] })).toBe('')
+    // A fresh conversation that has sent nothing yet stays invisible even when a
+    // usage sample is already present — `importLegacy` seeds `contextUsage` from
+    // a resumed session's own log, so the figure alone does not mean this
+    // session has run. The first turn is what brings the ring in, and a session
+    // whose own history seeded it carries activities, so it still shows at once.
+    expect(render({ owned: true, activities: [], contextUsage: projection.contextUsage })).toBe('')
+    expect(render({ owned: true, activities: [projection.activities[0]], contextUsage: projection.contextUsage })).toContain('data-dsh-claude-context-meter')
+    const trigger = render(projection)
+    expect(trigger).toContain('data-dsh-claude-context-meter')
+    expect(trigger).toContain('data-dsh-claude-context-trigger')
+    expect(trigger).toContain('stroke-dasharray')
+    // The ring is closed until it is opened.
+    expect(trigger).not.toContain('data-dsh-claude-context-panel')
+
+    const panel = renderToStaticMarkup(createElement(ClaudeContextPanel, {
+      usage: projection.contextUsage as never,
+      compaction: projection.activities[0] as never,
+      t,
+    }))
+    // The CLI's own composition, not DSH's three-row heuristic.
+    expect(panel).toContain('contextUsed')
+    expect(panel).toContain('contextCategorySystemPrompt')
+    expect(panel).toContain('contextCategoryMcpTools'.replace('McpTools', 'SystemTools'))
+    expect(panel).toContain('445K')
+    expect(panel).toContain('540K')
+    // Every category wears the same "no color reported" value, so the legend
+    // has to separate them itself: the rows and their bar segments must not all
+    // come out the same color.
+    expect(panel).toContain('#a78bfa')
+    expect(panel).toContain('--dsw-static-blue-450')
+    expect(panel).toContain('--dsw-static-neutral-bluish-400')
+    // Nothing falls back to the flat grey the report itself would have drawn.
+    expect(panel).not.toContain('background:#8b95a5')
+    // Free space is the absence of usage, so it is not a row.
+    expect(panel).not.toContain('contextCategoryFree')
+    // What the messages are made of, and the state of auto-compaction.
+    expect(panel).toContain('contextBreakdownTitle')
+    expect(panel).toContain('contextBreakdownToolResults')
+    expect(panel).toContain('380K')
+    expect(panel).toContain('contextAutoCompactOn')
+    expect(panel).toContain('967K')
+    // The before/after of the last compaction, which only the boundary carries.
+    expect(panel).toContain('contextLastCompaction')
+    expect(panel).toContain('72.7K')
+    expect(panel).toContain('1.9K')
+    expect(panel).toContain('9.0')
+    // An older CLI that reports no auto-compact state must not read as "off".
+    const unknown = renderToStaticMarkup(createElement(ClaudeContextPanel, {
+      usage: { model: 'm', totalTokens: 10, maxTokens: 100, percentage: 10, categories: [] } as never,
+      t,
+    }))
+    expect(unknown).not.toContain('contextAutoCompactOn')
+    expect(unknown).not.toContain('contextAutoCompactOff')
+  })
+
+  it('separates the context categories the CLI reports no color for', () => {
+    const bare = (name: string, color = '#8b95a5') => ({ name, tokens: 1, color })
+    // The value the report carries when it has no color of its own means "no
+    // color", not "grey": each known category gets a hue of its own.
+    expect(contextCategoryColor(bare('System prompt') as never)).toContain('--dsw-static-neutral-bluish-400')
+    expect(contextCategoryColor(bare('System tools') as never)).toBe('#a78bfa')
+    expect(contextCategoryColor(bare('Messages') as never)).toContain('--dsw-static-blue-450')
+    expect(contextCategoryColor(bare('MCP tools') as never)).not.toBe(contextCategoryColor(bare('Skills') as never))
+    // A color the CLI did choose is kept as it is.
+    expect(contextCategoryColor(bare('System tools', '#123456') as never)).toBe('#123456')
+    // A category the CLI adds later still lands on one palette hue, and on the
+    // same one every time.
+    const first = contextCategoryColor(bare('Brand new category') as never)
+    expect(first).toBe(contextCategoryColor(bare('Brand new category') as never))
+    expect(['#a78bfa', '#34d399', '#fbbf24', '#f472b6', '#22d3ee']).toContain(first)
+  })
+
+  it('mounts live Claude activity at step/start and hides the active task node at turn/end', async () => {
     const turnStart = { type: 'turn/start', seq: 1, time: 1, data: { turn: 2 } }
     const stepStart = { type: 'step/start', seq: 2, time: 2, data: { turn: 2, step: 1 } }
     const active = await projectConversation([turnStart, stepStart])
@@ -831,6 +1083,93 @@ describe('Claude sidecar conversation projection', () => {
     ])
   })
 
+  it('renders only the selected turn in the Tasks details panel', () => {
+    const markup = renderToStaticMarkup(createElement(ClaudeTasksPanel, {
+      turn: 2,
+      t: ((key: string) => key) as never,
+      closeDetails: () => {},
+      useClaudeProjection: ((selector: (projection: unknown) => unknown) => selector({
+        owned: true,
+        activities: [],
+        tasks: { tasks: [
+          { taskId: 'turn-2', description: 'Task for selected turn', status: 'completed', originTurn: 2, subagentType: 'Explore' },
+          { taskId: 'turn-3', description: 'Task for other turn', status: 'completed', originTurn: 3, backgrounded: true },
+        ] },
+      })) as never,
+    }))
+    expect(markup).toContain('Task for selected turn')
+    expect(markup).not.toContain('Task for other turn')
+    expect(markup).toContain('tasksPanelTurn')
+    expect(markup).toContain('class="dshClaudeDetailsCard"')
+    expect(markup).toContain('.dshClaudeDetailsCard {\n  box-sizing: border-box;\n  width: calc(100% - 16px);\n  height: calc(100% - 16px);\n  margin: 8px;')
+    expect(markup).toContain('border-radius:12px')
+    expect(markup).toContain('box-shadow:0 4px 16px')
+    expect(markup).toMatch(/class="dshClaudePanelIconButton" aria-label="tasksClose"[^>]*><svg\b/u)
+    expect(markup).not.toContain('>×</button>')
+    expect(markup).toContain('.dshClaudePanelIconButton:hover')
+  })
+
+  it('offers a stop control on a running task, and none on a finished one', () => {    const panel = (tasks: readonly ClaudeTaskInfo[], stopTask?: (sessionId: string, taskId: string) => Promise<void>) =>
+      renderToStaticMarkup(createElement(ClaudeTasksPanel, {
+        turn: 2,
+        t: ((key: string) => key) as never,
+        closeDetails: () => {},
+        sessionId: 'dsh-1',
+        ...(stopTask === undefined ? {} : { stopTask }),
+        useClaudeProjection: ((selector: (projection: unknown) => unknown) => selector({
+          owned: true,
+          activities: [],
+          tasks: { tasks },
+        })) as never,
+      }))
+
+    const running = panel([{ taskId: 'live', description: 'Watch logs', status: 'running', originTurn: 2, backgrounded: true }], async () => {})
+    expect(running).toContain('dsh-claude-task-stop')
+    expect(running).toContain('tasksStop')
+
+    // A settled task has nothing to stop, and a Host whose bundle predates the
+    // route offers no control at all rather than a button that cannot work.
+    expect(panel([{ taskId: 'done', description: 'Finished', status: 'completed', originTurn: 2, backgrounded: true }], async () => {}))
+      .not.toContain('dsh-claude-task-stop')
+    expect(panel([{ taskId: 'live', description: 'Watch logs', status: 'running', originTurn: 2, backgrounded: true }]))
+      .not.toContain('dsh-claude-task-stop')
+  })
+
+  it('draws a TodoWrite call as a checklist instead of raw JSON', () => {
+    const tool = {
+      toolUseId: 'todo-1',
+      toolName: 'TodoWrite',
+      description: 'Updated todos (1/3 done)',
+      phase: 'completed' as const,
+      input: JSON.stringify({ todos: [
+        { content: 'Read the issue', status: 'completed', activeForm: 'Reading the issue' },
+        { content: 'Fix the parser', status: 'in_progress', activeForm: 'Fixing the parser' },
+        { content: 'Run the tests', status: 'pending', activeForm: 'Running the tests' },
+        { content: '', status: 'pending' },
+      ] }),
+      output: 'Todos have been modified successfully.',
+      subcalls: [],
+    }
+    const markup = renderToStaticMarkup(createElement(ClaudeTranscriptToolItem, { tool, t: ((key: string) => key) as never }))
+    expect(markup).toContain('dsh-claude-todo-list')
+    expect(markup).toContain('Read the issue')
+    expect(markup).toContain('data-status="in_progress"')
+    expect(markup).toContain('data-status="completed"')
+    // An entry with no content is not a task, and the raw payload is gone.
+    expect(markup.match(/dsh-claude-todo-item\b/gu)).toHaveLength(3)
+    // The list is the payload; its raw JSON never reaches the card.
+    expect(markup).not.toContain('activeForm')
+    expect(todoItems({ todos: [{ content: 'x', status: 'unknown' }] })).toEqual([{ content: 'x', status: 'pending' }])
+    expect(todoItems('nonsense')).toEqual([])
+
+    // The collapsed tool row says how far through the list Claude is.
+    const items = transcriptItemsForStep([
+      { turn: 2, step: 1, ordinal: 1, kind: 'tool-call', phase: 'started', toolUseId: 'todo-1', toolName: 'TodoWrite', detail: tool.input },
+      { turn: 2, step: 1, ordinal: 2, kind: 'tool-result', phase: 'completed', toolUseId: 'todo-1', detail: 'Todos have been modified successfully.' },
+    ], 2, 1)
+    expect(items[0]).toMatchObject({ kind: 'tools', tools: [{ description: 'Updated todos (1/3 done)' }] })
+  })
+
   it('publishes one marker when a Claude turn contains multiple assistant steps', async () => {
     const turnStart = { type: 'turn/start', seq: 1, time: 1, data: { turn: 2 } }
     const assistant = (seq: number, step: number, provider = 'claude') => ({
@@ -882,6 +1221,44 @@ describe('Claude sidecar conversation projection', () => {
       turn: { data: { get: () => ({ turn: 2 }) } },
     } as never)).toEqual({ turn: 2 })
     expect(selectClaudeTurn({ turn: { data: { get: () => undefined } } } as never)).toBeNull()
+  })
+
+  it('keeps one row for a mid-turn message, from queued through run', () => {
+    const activities: ClaudeActivityEvent[] = [
+      { turn: 2, step: 1, ordinal: 1, kind: 'status', phase: 'updated', commandUuid: 'p1', title: 'Claude Code queued your message', summary: 'Claude reads it at the next step of this turn' },
+      { turn: 2, step: 1, ordinal: 2, kind: 'status', phase: 'updated', commandUuid: 'p1', title: 'Claude Code picked up your queued message' },
+      { turn: 2, step: 1, ordinal: 3, kind: 'status', phase: 'completed', commandUuid: 'p1', title: 'Claude Code ran your queued message' },
+      // A status ping with no identity stays out, as before.
+      { turn: 2, step: 1, ordinal: 4, kind: 'status', phase: 'completed', title: 'Claude Code requesting' },
+    ]
+    const rows = lifecycleRows(activities, 2, 1)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activity).toMatchObject({
+      commandUuid: 'p1',
+      title: 'Claude Code ran your queued message',
+      phase: 'completed',
+    })
+    expect(rows[0]?.running).toBe(false)
+    // The row is drawn, and reads as the reader's own message rather than as
+    // protocol noise.
+    const markup = renderToStaticMarkup(createElement(ClaudeActivityNode, {
+      node: { kind: 'claude-activity-step', data: { turn: 2, step: 1 } },
+      useClaudeProjection: ((selector: (value: unknown) => unknown) => selector({
+        owned: true, revision: 1, activities, commands: [],
+      })) as never,
+      t: (key: string) => key,
+    } as never))
+    expect(markup).toContain('Claude Code ran your queued message')
+  })
+
+  it('draws a hook that is running and the failure it ended in', () => {
+    const activities: ClaudeActivityEvent[] = [
+      { turn: 2, step: 1, ordinal: 1, kind: 'status', phase: 'updated', hookId: 'h1', title: 'Claude Code hook guard', summary: 'Stop running' },
+      { turn: 2, step: 1, ordinal: 2, kind: 'status', phase: 'failed', hookId: 'h1', title: 'Claude Code hook guard', summary: 'Stop exited 2', isError: true },
+    ]
+    const rows = lifecycleRows(activities, 2, 1)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.activity).toMatchObject({ hookId: 'h1', phase: 'failed', isError: true })
   })
 })
 

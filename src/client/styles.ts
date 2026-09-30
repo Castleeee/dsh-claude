@@ -647,6 +647,406 @@ export const planHint: CSSProperties = {
 
 /** The task's tool cards. No inset panel of their own: each card already
  *  carries its own surface, and nesting two would read as a box in a box. */
+export const taskToolList: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  marginTop: 7,
+}
+
+export const taskActivityList: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 7,
+  margin: '7px 0 0',
+  padding: '8px 9px',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  listStyle: 'none',
+}
+
+export const taskActivityItem: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 6,
+}
+
+export const taskActivityGlyph: CSSProperties = {
+  flex: 'none',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+  lineHeight: '17px',
+}
+
+export const taskActivityBody: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+}
+
+export const taskActivityTitle: CSSProperties = {
+  margin: 0,
+  color: 'var(--dsw-alias-label-secondary)',
+  fontSize: 11,
+  lineHeight: '17px',
+  fontWeight: 500,
+  overflowWrap: 'anywhere',
+}
+
+export const taskActivitySummary: CSSProperties = {
+  margin: '1px 0 0',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+  lineHeight: '17px',
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+}
+
+export const taskActivityDetail: CSSProperties = {
+  marginTop: 3,
+}
+
+export const taskActivityDetailSummary: CSSProperties = {
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 10,
+  lineHeight: '16px',
+  cursor: 'pointer',
+}
+
+export const tasksBadge: CSSProperties = {
+  position: 'absolute',
+  top: -3,
+  right: -5,
+  minWidth: 14,
+  height: 14,
+  display: 'grid',
+  placeItems: 'center',
+  padding: '0 3px',
+  borderRadius: 999,
+  background: 'var(--dsw-static-blue-450)',
+  color: 'var(--dsw-alias-label-on-accent, #fff)',
+  fontSize: 9,
+  lineHeight: '1',
+  fontWeight: 600,
+}
+
+/* Claude task launcher attached to the owning conversation turn (minimal
+ * entry: a link-style label at the turn tail, hover reveals the task list). */
+
+export const tasksBadgeWrap: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-start',
+  margin: '8px 0 4px',
+}
+
+export const tasksBadgeSeat: CSSProperties = {
+  position: 'relative',
+  display: 'inline-flex',
+}
+
+export const tasksTurnBadge: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  padding: '2px 4px',
+  border: 'none',
+  borderRadius: 6,
+  background: 'transparent',
+  color: 'var(--dsw-static-blue-450)',
+  font: 'inherit',
+  fontSize: 14,
+  lineHeight: '22px',
+  fontVariantNumeric: 'tabular-nums',
+  cursor: 'pointer',
+  transition: 'color 120ms ease, opacity 120ms ease',
+}
+
+export const tasksBadgeHovered: CSSProperties = {
+  textDecoration: 'underline',
+}
+
+export const tasksBadgeDone: CSSProperties = {
+  opacity: 0.7,
+}
+
+export const tasksBadgeDot: CSSProperties = {
+  width: 8,
+  height: 8,
+  flex: 'none',
+  borderRadius: 999,
+  background: 'var(--dsw-static-blue-450)',
+}
+
+export const tasksBadgeDotError: CSSProperties = {
+  background: 'var(--dsw-alias-state-error-primary)',
+}
+
+export const tasksBadgeDotDone: CSSProperties = {
+  background: 'var(--dsw-alias-state-success-primary, var(--dsw-static-green-500))',
+}
+
+export const tasksBadgeLabel: CSSProperties = {
+  fontWeight: 500,
+}
+
+/** The live "what is it doing" pill: quieter than the task badge, because it is
+ *  a state that changes rather than a control to press. */
+export const livePill: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '2px 4px',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 13,
+  lineHeight: '20px',
+  fontVariantNumeric: 'tabular-nums',
+}
+
+export const livePillDot: CSSProperties = {
+  width: 6,
+  height: 6,
+  flex: 'none',
+  borderRadius: 999,
+  background: 'var(--dsw-static-blue-450)',
+}
+
+export const livePillElapsed: CSSProperties = {
+  color: 'var(--dsw-alias-label-caption)',
+}
+
+/** The Claude session's context meter: the Host's own ring geometry and panel
+ *  frame, filled with what the CLI reports instead of what DSH can see. */
+export const contextMeterRoot: CSSProperties = {
+  display: 'inline-flex',
+  position: 'relative',
+}
+
+export const contextMeterTrigger: CSSProperties = {
+  width: 28,
+  height: 28,
+  display: 'grid',
+  placeItems: 'center',
+  flex: 'none',
+  padding: 0,
+  border: 'none',
+  borderRadius: 999,
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-secondary)',
+  cursor: 'pointer',
+}
+
+export const contextMeterTriggerOpen: CSSProperties = {
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+}
+
+export const contextMeterTrack: CSSProperties = {
+  stroke: 'var(--dsw-alias-border-l3)',
+}
+
+export const contextMeterFill: CSSProperties = {
+  stroke: 'var(--dsw-alias-label-tertiary)',
+  transition: 'stroke-dashoffset 200ms ease',
+}
+
+export const contextMeterPanel: CSSProperties = {
+  position: 'absolute',
+  right: 0,
+  bottom: 'calc(100% + 8px)',
+  zIndex: 100,
+  boxSizing: 'border-box',
+  width: 264,
+  padding: 12,
+  border: '1px solid var(--dsw-alias-border-l1)',
+  borderRadius: 12,
+  background: 'var(--dsw-specific-menu)',
+  boxShadow: 'var(--dsw-elevation-prominent)',
+  color: 'var(--dsw-alias-label-secondary)',
+  fontSize: 12,
+  lineHeight: '20px',
+  cursor: 'default',
+  textAlign: 'left',
+}
+
+export const contextMeterHeader: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+}
+
+export const contextMeterHeadline: CSSProperties = {
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const contextMeterPercent: CSSProperties = {
+  color: 'var(--dsw-alias-label-primary)',
+  fontWeight: 500,
+}
+
+export const contextMeterFigures: CSSProperties = {
+  marginLeft: 'auto',
+  color: 'var(--dsw-alias-label-primary)',
+  fontWeight: 500,
+  fontVariantNumeric: 'tabular-nums',
+}
+
+export const contextMeterWarning: CSSProperties = {
+  marginTop: 6,
+  color: 'var(--dsw-alias-state-error-primary)',
+}
+
+export const contextMeterBar: CSSProperties = {
+  display: 'flex',
+  gap: 1,
+  height: 4,
+  margin: '10px 0 12px',
+  borderRadius: 999,
+  background: 'var(--dsw-alias-interactive-bg-hover)',
+  overflow: 'hidden',
+}
+
+export const contextMeterSegment: CSSProperties = {
+  flex: 'none',
+  minWidth: 2,
+  height: '100%',
+  borderRadius: 1,
+}
+
+export const contextMeterRows: CSSProperties = {
+  margin: '6px 0 0',
+  padding: 0,
+}
+
+export const contextMeterRow: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 12,
+  padding: '2px 0',
+}
+
+export const contextMeterRowLabel: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  minWidth: 0,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+export const contextMeterSwatch: CSSProperties = {
+  width: 8,
+  height: 8,
+  flex: 'none',
+  marginRight: 6,
+  borderRadius: 2,
+}
+
+export const contextMeterDeferred: CSSProperties = {
+  marginLeft: 6,
+  color: 'var(--dsw-alias-label-caption)',
+}
+
+export const contextMeterRowValue: CSSProperties = {
+  margin: 0,
+  color: 'var(--dsw-alias-label-primary)',
+  fontVariantNumeric: 'tabular-nums',
+}
+
+export const contextMeterSecondary: CSSProperties = {
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const contextMeterSection: CSSProperties = {
+  marginTop: 10,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const contextMeterFoot: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  marginTop: 10,
+  color: 'var(--dsw-alias-label-caption)',
+}
+
+export const tasksHoverCard: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  bottom: 'calc(100% + 8px)',
+  zIndex: 40,
+  minWidth: 240,
+  maxWidth: 340,
+  boxSizing: 'border-box',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+  padding: '10px 12px',
+  border: '1px solid var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 16%, transparent))',
+  borderRadius: 12,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  boxShadow: '0 8px 24px color-mix(in srgb, #000 24%, transparent)',
+  fontSize: 12,
+  lineHeight: '18px',
+  pointerEvents: 'auto',
+}
+
+export const tasksHoverHeader: CSSProperties = {
+  color: 'var(--dsw-alias-label-primary)',
+  fontWeight: 600,
+}
+
+export const tasksHoverRow: CSSProperties = {
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+}
+
+export const tasksHoverGlyph: CSSProperties = {
+  width: 12,
+  flex: 'none',
+  textAlign: 'center',
+  fontSize: 10,
+  lineHeight: 1,
+  fontWeight: 700,
+}
+
+export const tasksHoverGlyphRunning: CSSProperties = {
+  color: 'var(--dsw-static-blue-450)',
+}
+
+export const tasksHoverGlyphError: CSSProperties = {
+  color: 'var(--dsw-alias-state-error-primary)',
+}
+
+export const tasksHoverGlyphDone: CSSProperties = {
+  color: 'var(--dsw-alias-state-success-primary, var(--dsw-static-green-500))',
+}
+
+export const tasksHoverDesc: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+export const tasksHoverType: CSSProperties = {
+  flex: 'none',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 10,
+}
+
+export const tasksHoverMore: CSSProperties = {
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const tasksHoverHint: CSSProperties = {
+  marginTop: 2,
+  paddingTop: 6,
+  borderTop: '1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 12%, transparent))',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+}
+
 /* Claude repository setup controls on the blank-session hero. */
 
 export const heroRepositoryControls: CSSProperties = {
@@ -3474,3 +3874,268 @@ export const promptSuggestionCss = `
   color: var(--dsw-alias-label-caption);
 }
 `
+
+export const queueActions: CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 2,
+}
+
+
+export const queueBar: CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  boxSizing: 'border-box',
+  display: 'flex',
+  flexDirection: 'column',
+  padding: '3px 6px 3px 11px',
+  border: '1px solid var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 16%, transparent))',
+  borderRadius: 11,
+  background: 'var(--dsw-alias-bg-layer-1)',
+  color: 'var(--dsw-alias-label-primary)',
+  boxShadow: '0 1px 2px color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent)',
+  font: 'inherit',
+  fontSize: 13,
+  lineHeight: '20px',
+}
+
+
+export const queueCount: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  fontWeight: 550,
+}
+
+
+export const queueEditor: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  height: 26,
+  boxSizing: 'border-box',
+  padding: '0 8px',
+  border: '1px solid var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 16%, transparent))',
+  borderRadius: 6,
+  outline: 'none',
+  background: 'var(--dsw-alias-bg-layer-2)',
+  color: 'var(--dsw-alias-label-primary)',
+  font: 'inherit',
+  fontSize: 13,
+}
+
+
+export const queueHeader: CSSProperties = {
+  width: '100%',
+  minHeight: 30,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '2px 0',
+  border: 'none',
+  outline: 'none',
+  background: 'transparent',
+  color: 'inherit',
+  font: 'inherit',
+  fontSize: 13,
+  textAlign: 'left',
+  cursor: 'pointer',
+}
+
+
+export const queueLead: CSSProperties = {
+  flex: 'none',
+  display: 'grid',
+  placeItems: 'center',
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+
+export const queueList: CSSProperties = {
+  maxHeight: 180,
+  margin: 0,
+  padding: 0,
+  listStyle: 'none',
+  overflowY: 'auto',
+}
+
+
+export const queuePreview: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+  overflow: 'hidden',
+  color: 'var(--dsw-alias-label-secondary)',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+
+export const queueRow: CSSProperties = {
+  minHeight: 30,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+}
+
+
+export const queueRowDivider: CSSProperties = {
+  borderTop: '1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 12%, transparent))',
+}
+
+
+export const taskActivitySection: CSSProperties = {
+  margin: '7px 0 0 27px',
+}
+
+
+export const taskCard: CSSProperties = {
+  padding: '11px 12px',
+  border: '1px solid var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 16%, transparent))',
+  borderRadius: 10,
+  background: 'var(--dsw-alias-bg-layer-1)',
+  boxShadow: '0 1px 3px color-mix(in srgb, #000 7%, transparent)',
+}
+
+
+export const taskCardBody: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+}
+
+
+export const taskCardGlyph: CSSProperties = {
+  width: 18,
+  height: 18,
+  flex: 'none',
+  display: 'grid',
+  placeItems: 'center',
+  marginTop: 1,
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+  lineHeight: 1,
+}
+
+
+export const taskCardList: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  marginTop: 4,
+}
+
+
+export const taskCardRunning: CSSProperties = {
+  borderColor: 'var(--dsw-alias-border-l3, color-mix(in srgb, currentColor 24%, transparent))',
+}
+
+
+export const taskCardTop: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 9,
+}
+
+
+export const taskMeta: CSSProperties = {
+  margin: '7px 0 0 27px',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+  lineHeight: '17px',
+  overflowWrap: 'anywhere',
+}
+
+
+export const taskStatusLine: CSSProperties = {
+  margin: '1px 0 0',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+  lineHeight: '17px',
+}
+
+
+export const taskSummary: CSSProperties = {
+  margin: '6px 0 0 27px',
+  color: 'var(--dsw-alias-label-secondary)',
+  fontSize: 12,
+  lineHeight: '18px',
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+}
+
+
+export const taskTextButton: CSSProperties = {
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--dsw-static-blue-450)',
+  font: 'inherit',
+  fontSize: 11,
+  lineHeight: '18px',
+  cursor: 'pointer',
+}
+
+
+export const taskTitle: CSSProperties = {
+  margin: 0,
+  color: 'var(--dsw-alias-label-primary)',
+  fontSize: 14,
+  lineHeight: '20px',
+  fontWeight: 550,
+  overflowWrap: 'anywhere',
+}
+
+
+export const tasksFinishedSection: CSSProperties = {
+  marginTop: 12,
+  paddingTop: 8,
+  borderTop: '1px solid var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 16%, transparent))',
+}
+
+
+export const tasksGroupCount: CSSProperties = {
+  minWidth: 18,
+  padding: '0 5px',
+  borderRadius: 999,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  color: 'var(--dsw-alias-label-tertiary)',
+  fontSize: 11,
+  lineHeight: '18px',
+  textAlign: 'center',
+  fontVariantNumeric: 'tabular-nums',
+}
+
+
+export const tasksGroupHeading: CSSProperties = {
+  minHeight: 30,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+}
+
+
+export const tasksGroupTitle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  color: 'var(--dsw-alias-label-secondary)',
+  fontSize: 14,
+  lineHeight: '22px',
+  fontWeight: 600,
+}
+
+
+export const tasksGroupToggle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-secondary)',
+  font: 'inherit',
+  fontSize: 14,
+  lineHeight: '22px',
+  fontWeight: 600,
+  cursor: 'pointer',
+}
+

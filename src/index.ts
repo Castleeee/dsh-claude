@@ -10,13 +10,21 @@ import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
+import type {} from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-permission-presets'
+// Brings the `model/selection` SessionEventMap entry into scope: that event is
+// declared by the session controller, which the Host mounts alongside this
+// plugin, and appending it is how a session's own model is set.
+import type {} from '@deepseek-ai/dsh-api-session-controller'
+import { restoreSkippedHumanPrompt } from './inbox-recovery.ts'
 import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER_IDS, CLAUDE_STEERING_SERVICE } from './constants.ts'
 import { CLAUDE_COMMANDS_SERVICE, projectClaudeCommands, type ClaudeAgentCommandService, type ClaudeCommandView } from './command-bridge.ts'
 import { ClaudeSidecarRepository } from './sidecar.ts'
 import { resolveClaudeExecutable } from './executable.ts'
-import { ClaudeProcessLimitError, ClaudeSupervisor, ClaudeTurnBusyError, type ClaudeSteeringOutcome, type ClaudeSteeringService } from './supervisor.ts'
-import { mountClaudeSteering } from './steering.ts'
+import { ClaudeProcessLimitError, ClaudeTurnBusyError, ClaudeSupervisor, type ClaudeSteeringOutcome, type ClaudeSteeringService } from './supervisor.ts'
 import { createClaudeCodeAdapter } from './adapter.ts'
+import { ensureManagedPreset, ManagedPresetConflictError } from './preset-installer.ts'
+import { mountClaudeSteering } from './steering.ts'
 import { claudeBridgeDiagnostics, registerClaudeDoctorRoutes, type ClaudeBridgeDiagnostic } from './doctor-routes.ts'
 import { registerClaudeProjectionRoute } from './projection-routes.ts'
 import { RepositoryStatusService, type RepositoryStatus } from './repository-status.ts'
@@ -40,6 +48,8 @@ import { registerReviewCommentRoute } from './review-comment-routes.ts'
 import { registerPlanFeedbackRoute } from './plan-feedback-routes.ts'
 import { registerClaudeClientDiagnosticsRoute } from './client-diagnostics-routes.ts'
 import { registerClaudeRewindRoute } from './rewind-routes.ts'
+import { registerClaudeFileRewindRoute } from './file-rewind-routes.ts'
+import { registerClaudeTaskRoute } from './task-routes.ts'
 import { registerClaudeBackgroundTaskRoute } from './background-task-routes.ts'
 import { registerClaudePermissionModeRoute } from './permission-mode-routes.ts'
 import { claudePermissionMode, type ClaudePermissionModeView, type ClaudePermissionSelector } from './permission-mode.ts'
@@ -56,20 +66,25 @@ import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usag
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
 import { readDefaultPermissionMode, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
-
-// The steering contract is published for a plugin that wants to reach a running
-// Claude turn itself: the service name to look up, and the shape it can rely on.
-export { CLAUDE_STEERING_SERVICE } from './constants.ts'
-export type { ClaudeSteeringOutcome, ClaudeSteeringService } from './supervisor.ts'
+import { ClaudeWorldStore, PERMISSION_NS } from './world-store.ts'
+import { ClaudeWorldSwitch, worldSettingsGateway } from './world-switch.ts'
+import { mountWorldWiring, recoverWorldAtBoot } from './world-wiring.ts'
 
 export const name = 'llm-claude'
-export const inject = ['llm', 'agents', 'agentPresets', 'commands', 'subprocess', 'approval', 'userQuestions', 'attachments']
+export const inject = ['llm', 'agents', 'agentPresets', 'commands', 'subprocess', 'approval', 'userQuestions', 'attachments', 'settings', 'permissionPresets', 'sessionController']
+
+// The steering contract is published for the plugin that consumes it: the
+// service name to look up, and the shape it can rely on.
+export { CLAUDE_STEERING_SERVICE } from './constants.ts'
+export type { ClaudeSteeringOutcome, ClaudeSteeringService } from './supervisor.ts'
 
 export interface Config {
   executablePath?: string
   model?: string
   idleTimeoutMs?: number
   maxProcesses?: number
+  /** Override for the two-world store; a test points it at a temporary path. */
+  worldsFile?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -77,6 +92,7 @@ export const Config: z<Config> = z.object({
   model: z.string().default('default'),
   idleTimeoutMs: z.number().min(1_000).max(2_147_483_647).default(30 * 60 * 1_000),
   maxProcesses: z.number().step(1).min(1).default(4),
+  worldsFile: z.string(),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -222,6 +238,20 @@ export function mountClaudeMetadata(
       if (status === 'idle') refresh()
     })
 
+    // The loop claims a turn's opening prompt by position, so a plugin notice
+    // that lands ahead of the arriving human message can take its slot and
+    // leave the step with nothing human in it. That is fatal for this provider
+    // alone: Claude's adapter sends exactly one direct human prompt and refuses
+    // to invent one, while other providers simply receive the batch as prose.
+    // Restoring the skipped prompt here keeps the mis-claim out of Claude's way
+    // without changing what any other preset sees.
+    const stopPreStep = agent.ctx.on('agent/pre-step', async ({ agent: subject, signal }, next) => {
+      const decision = await next()
+      if (decision.kind === 'reject' || signal.aborted) return decision
+      const restored = restoreSkippedHumanPrompt(subject, decision.messages)
+      return restored === decision.messages ? decision : { ...decision, messages: restored }
+    }, { prepend: true })
+
     refresh()
 
     return async () => {
@@ -229,6 +259,7 @@ export function mountClaudeMetadata(
       publishCommands([])
       if (retryTimer !== undefined) clearTimeout(retryTimer)
       stopStatus()
+      stopPreStep()
       await pending
     }
   }, 'dsh-claude: agent metadata bridge')
@@ -299,6 +330,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // conversation it was in the middle of.
     logger: { warn: message => { ctx.logger.warn(message) } },
     hostJobs: new ClaudeHostJobs(() => ctx.get('jobs'), message => { ctx.logger.warn(message) }),
+    // A steered message resolves its attachments through the same code path a
+    // turn's own prompt does, so its image limits and file wording cannot drift.
+    attachments: ctx.attachments,
   })
   let resolutionError: unknown
   try {
@@ -313,6 +347,119 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       [...CLAUDE_CODE_PROVIDER_IDS],
       createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request), () => probeClaudeModels(supervisorConfig.executablePath)),
     )
+    // Steering entry point. A message steered into a running Claude turn has to
+    // pass through the supervisor that owns that turn's process; whoever takes it
+    // out of the agent inbox calls this first, and `unavailable` tells them to
+    // keep the message for a later turn instead of losing it.
+    ctx.provide(CLAUDE_STEERING_SERVICE, {
+      deliver: (sessionId, content) => supervisor.deliverSteering(sessionId, content),
+    } satisfies ClaudeSteeringService)
+    // The Claude preset owns a whole configuration world: while it is selected,
+    // the global model and permission defaults are its own, and switching away
+    // restores every other preset's untouched. Boot recovery runs before the
+    // first turn so a crash mid-switch lands on one coherent world.
+    const worldSwitch = new ClaudeWorldSwitch({
+      settings: worldSettingsGateway(ctx),
+      store: new ClaudeWorldStore(config.worldsFile === undefined ? {} : { path: config.worldsFile }),
+      warn: message => { ctx.logger.warn(message) },
+      log: message => { ctx.logger.info(`dsh-claude: ${message}`) },
+    })
+    await recoverWorldAtBoot(worldSwitch, message => { ctx.logger.warn(message) })
+    ctx.effect(() => mountWorldWiring(ctx, {
+      switch: worldSwitch,
+      // The routes this package serves are the ones it registered its adapter
+      // for, which is the same constant the registration above used. Asking the
+      // registry instead cannot answer this: `listProviders()` lists every
+      // provider any plugin registered, so it cannot say which of them are ours
+      // — and making the answer depend on that lookup would turn a transient
+      // registration state into a silently dropped model choice.
+      ownsRoute: provider => CLAUDE_CODE_PROVIDER_IDS.includes(provider as never),
+      // Permissions live in the session log rather than the settings document,
+      // so installing a world does not move them. A still-blank session gets the
+      // destination world's preset applied directly, which is what makes the
+      // permission the user sees follow the preset switch.
+      applyPermission: (session, preset) => {
+        try {
+          ctx.permissionPresets.set(session, preset)
+        } catch (error) {
+          ctx.logger.warn(`dsh-claude: could not apply the ${preset} permission preset: ${String(error)}`)
+        }
+      },
+      // A session the Host has not composed yet has nowhere to install a
+      // selection, and the document may already have moved on by the time it is.
+      // Appending the same session event the Host's picker appends pins the
+      // choice to the session itself, which is what keeps a later composition
+      // from resolving back to the document.
+      recordModelSelection: (session, selection) => {
+        session.append('model/selection', selection)
+      },
+      // The model must be installed on the session itself, not only in the
+      // settings document. A session answers from its own logged selection, and
+      // the picker beside the composer reads that, so a switch that only
+      // rewrote the document left the running model on the outgoing world's
+      // value.
+      //
+      // It goes through the session controller rather than a bare
+      // `agent.session.append`: recording the event alone moves what the
+      // session SHOWS while the running agent keeps the model it was composed
+      // with. The controller's own method is the one that also installs the
+      // selection into the agent's next request assembly — which is the
+      // difference between "the picker says v4-pro" and the turn actually
+      // routing there. Without it, a session switched away from Claude still
+      // reached the `claude` provider and died on this plugin's own preset
+      // guard.
+      applyModel: (agent, selection) => {
+        // The same call the Host's own model picker makes, and the reason this
+        // is a call rather than a bare `agent.session.append`:
+        //
+        //   append('model/selection', …)  records the choice,
+        //   selectionFor(agent).current = …  INSTALLS it for the next request.
+        //
+        // Only the first half leaves the agent's request assembly reading the
+        // session's last logged header. That is exactly what the Host log
+        // showed: the switch wrote `opencode-go/…` on the session and the next
+        // request still asked for `claude/…`, so the adapter refused with
+        // "provider claude is available only to the claude preset" while the
+        // picker displayed the new model. The controller's own path does both.
+        const controller = ctx.sessionController as unknown as {
+          selectModel(request: Record<string, unknown>): Promise<unknown>
+        }
+        void controller.selectModel({
+          sessionId: agent.id,
+          provider: selection.provider,
+          model: selection.model,
+          ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+        }).then(
+          () => {
+            // Positive evidence of the one write a switch makes to the session.
+            // The MISMATCH line in the adapter is its other half: this records
+            // what was installed, that records what the agent then asked for.
+            ctx.logger.info(`dsh-claude: applied model to session ${String(agent.id)} -> ${selection.provider}/${selection.model}`)
+          },
+          (error: unknown) => {
+            ctx.logger.warn(`dsh-claude: could not install ${selection.provider}/${selection.model} on session ${String(agent.id)}: ${error instanceof Error ? error.message : String(error)}`)
+          },
+        )
+      },
+      // A sandbox-mode event names the mode, while the settings default stores
+      // the preset that bundles it; resolve through the service's own table so
+      // a deployment that renames or re-bundles presets stays consistent.
+      permissionNameFor: sandboxMode => ctx.permissionPresets.names.find(name => {
+        try {
+          return ctx.permissionPresets.resolve(name).sandbox === sandboxMode
+        } catch {
+          return false
+        }
+      }),
+      writePermissionDefault: async preset => {
+        const settings = ctx.get('settings')
+        if (settings === undefined) return
+        await settings.update(PERMISSION_NS, { defaultPreset: preset })
+      },
+      log: message => { ctx.logger.info(`dsh-claude: ${message}`) },
+      warn: message => { ctx.logger.warn(message) },
+    }), 'dsh-claude: configuration worlds')
+    ctx.logger.info(`dsh-claude: configuration worlds ready (store: ${worldSwitch.storePath})`)
     // The profile's default model is written by whatever the user last picked,
     // so it can hold a spelling a later lineup no longer lists -- every new
     // session then opens on it and the selector prints `claude/<id>`. Once
@@ -335,7 +482,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // it out of the agent inbox calls this first, and `unavailable` tells them
     // to keep the message for a later turn instead of losing it.
     ctx.provide(CLAUDE_STEERING_SERVICE, {
-      deliver: (sessionId, prompt): ClaudeSteeringOutcome => supervisor.deliverSteering(sessionId, prompt),
+      deliver: (sessionId, prompt): Promise<ClaudeSteeringOutcome> => supervisor.deliverSteering(sessionId, prompt),
     } satisfies ClaudeSteeringService)
     // And the one caller that always exists: DSH's own Steer action, which puts
     // the message in the agent's next-step inbox. Nothing else would claim it
@@ -623,6 +770,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         return cwd === undefined ? false : restoreWorktreeTree(subprocess, cwd, tree)
       },
     })
+    // File rewind is served straight from Claude Code's own checkpoint store
+    // rather than from anything DSH reconstructs, so it is registered as its
+    // own pass-through route beside the conversation rewind above.
+    registerClaudeFileRewindRoute(webCtx, {
+      owns: ownsClaudeSession,
+      rewind: (sessionId, userMessageId, options) => supervisor.rewindFiles(sessionId, userMessageId, options),
+    })
     registerPlanUsageRoute(webCtx, fetchedAt => probePlanUsage(supervisorConfig.executablePath, fetchedAt))
     const claudeSessionBusy = (sessionId: string): boolean => supervisor.snapshots().some(item => (
       item.sessionId === sessionId && (item.state === 'running' || item.state === 'interrupting')
@@ -648,6 +802,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const mode = folded === 'auto' && autoSupported === false ? 'default' : folded
       return { mode, locked: claudeSessionBusy(sessionId), ...(autoSupported === undefined ? {} : { autoSupported }) }
     }
+    registerClaudeTaskRoute(webCtx, {
+      tasksFor: sessionId => supervisor.tasks(sessionId),
+      stopTask: (sessionId, taskId) => supervisor.stopTask(sessionId, taskId),
+    })
     registerClaudeProjectionRoute(webCtx, sidecar, ownsClaudeSession, sessionId => commandCatalogs.get(sessionId) ?? [], async sessionId => {
       const agent = webCtx.agents.get(sessionId as never)
       if (agent === undefined || webCtx.agentPresets.composedPreset(agent.ctx) !== CLAUDE_CODE_PRESET_ID) return undefined

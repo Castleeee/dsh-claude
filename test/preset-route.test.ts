@@ -35,9 +35,38 @@ function capture(jobs?: { attachController(name: string): () => void }): { ctx: 
 describe('Claude preset route', () => {
   it('preserves the upstream selected model alias', async () => {
     const captured = capture()
-    apply(captured.ctx)
+    apply(captured.ctx, { accepts: model => model === 'opus' })
     const result = await captured.listener()({} as never, async () => ({ provider: 'upstream-provider', model: 'opus' }))
     expect(result).toEqual({ provider: CLAUDE_CODE_PROVIDER, model: 'opus' })
+  })
+
+  // The provider is forced unconditionally, so a model this provider cannot
+  // serve must not be carried through beside it: `claude` paired with a
+  // DeepSeek id is a request no adapter can resolve, and is exactly what a
+  // session leaving the shared world for this preset used to produce.
+  it('drops a foreign model instead of pairing it with the Claude provider', async () => {
+    const captured = capture()
+    apply(captured.ctx, { accepts: model => model === 'opus' })
+    const result = await captured.listener()({} as never, async () => ({
+      provider: 'upstream-provider',
+      model: 'deepseek-v4-flash-vision-exp',
+    }))
+    expect(result).toEqual({ provider: CLAUDE_CODE_PROVIDER, model: 'default' })
+  })
+
+  it('keeps a model the CLI lineup advertises under either spelling', async () => {
+    recordClaudeModels([{ value: 'claude-opus-4-1', displayName: 'Opus' }] as never)
+    try {
+      const captured = capture()
+      apply(captured.ctx)
+      // The CLI's own spelling is what a session persisted before aliasing holds.
+      const own = await captured.listener()({} as never, async () => ({ provider: 'x', model: 'claude-opus-4-1' }))
+      expect(own.model).toBe('claude-opus-4-1')
+      const foreign = await captured.listener()({} as never, async () => ({ provider: 'x', model: 'gpt-5' }))
+      expect(foreign.model).toBe('default')
+    } finally {
+      resetClaudeModels()
+    }
   })
 
   it('defaults to default when upstream carries no model', async () => {
@@ -89,7 +118,10 @@ describe('Claude preset route', () => {
     await expect(route('claude-fable-5-1[1m]')).resolves.toMatchObject({ model: 'fable[1m]' })
     await expect(route('claude-fable-5-2[1m]')).resolves.toMatchObject({ model: 'fable[1m]' })
     await expect(route('opus[1m]')).resolves.toMatchObject({ model: 'opus[1m]' })
-    await expect(route('something-else')).resolves.toMatchObject({ model: 'something-else' })
+    // A spelling no catalog row carries is the leftover of a preset switch,
+    // not an instruction: this fork refuses to pair it with the Claude
+    // provider, because no adapter can resolve that request.
+    await expect(route('something-else')).resolves.toMatchObject({ model: 'default' })
     resetClaudeModels()
   })
 })

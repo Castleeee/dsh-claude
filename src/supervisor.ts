@@ -6,6 +6,7 @@ import {
   type PermissionMode,
   type Query,
   type SDKControlGetContextUsageResponse,
+  type SDKControlInterruptResponse,
   type SDKMessage,
   type SDKUserMessage,
   type Settings as ClaudeSettings,
@@ -16,7 +17,11 @@ import { ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { AsyncQueue } from './async-queue.ts'
+// The prompt resolver lives with the adapter that owns prompt building. There
+// is no cycle: the adapter imports this module's types only.
+import { resolveDirectUserPrompt, type ClaudeAttachmentReader } from './adapter.ts'
 import { DEFAULT_CLAUDE_RENDER_MODE, TASK_TOOL_NAMES, type ClaudeRenderMode } from './constants.ts'
 import {
   currentClaudeActivityCursor,
@@ -24,6 +29,7 @@ import {
   safeDetail,
   type ClaudeActivityCursor,
   type ClaudeActivityInput,
+  type ClaudeLiveProgress,
   type ClaudeTaskInfo,
   type ClaudeUsage,
 } from './events.ts'
@@ -38,6 +44,7 @@ import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-ca
 import { readPlanUsageFrom } from './plan-usage.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
+import { EMPTY_REWIND_STATE, rewindPromptFor } from './rewind.ts'
 import { hostJobKind, hostJobProgress, type ClaudeHostJobs } from './host-jobs.ts'
 import type {} from '@deepseek-ai/dsh-tool-todo'
 import { ClaudeTaskBoard, carriedTodos, todosFromTodoWrite, type TodoItem } from './todo-bridge.ts'
@@ -52,9 +59,59 @@ export const CLAUDE_FOREGROUND_BASH_BACKGROUND_MS = 60_000
 /** Bound on steered messages one turn may own, so a misbehaving caller cannot
  *  grow the ownership set without limit. */
 export const MAX_STEERED_PROMPTS_PER_TURN = 16
+/** How long a disconnect waits for the dead process to be reaped, so the
+ *  failure can say how it ended. A process that died for its own reasons
+ *  resolves immediately; this only bounds the case where it has not died. */
+export const DISCONNECT_EXIT_WAIT_MS = 1_000
+
+/** How often a running tool's clock is republished while it stays the same
+ *  tool. A tool heartbeat arrives every few hundred milliseconds; a reader
+ *  cannot read faster than this, and each republish is a line on the wire. */
+export const LIVE_ELAPSED_INTERVAL_MS = 1_000
 
 /** What {@link ClaudeSupervisor.deliverSteering} did with one steered message. */
 export type ClaudeSteeringOutcome = 'delivered' | 'unavailable'
+/** What {@link ClaudeSupervisor.stopTask} did with one stop request. */
+export type ClaudeStopTaskOutcome = 'stopped' | 'unavailable'
+
+/** The SDK's own report of one file rewind.
+ *
+ *  Mirrored structurally rather than imported so this module keeps its single
+ *  dependency on the SDK's public types, and so a field the CLI adds later
+ *  cannot change this module's public shape without a deliberate edit. */
+export interface ClaudeRewindFilesResult {
+  readonly canRewind: boolean
+  readonly error?: string
+  /** Paths the rewind would touch (dry run) or did touch (real run). */
+  readonly filesChanged?: readonly string[]
+  readonly insertions?: number
+  readonly deletions?: number
+  readonly skippedLinks?: number
+}
+
+/** What {@link ClaudeSupervisor.rewindFiles} did with one rewind request. */
+export type ClaudeRewindOutcome =
+  | { readonly status: 'ok'; readonly result: ClaudeRewindFilesResult }
+  /** No live process to ask, or one that is still starting. */
+  | { readonly status: 'unavailable' }
+  /** A turn is still editing the working tree; rewinding would race it. */
+  | { readonly status: 'busy' }
+  /** The turn has no recorded prompt uuid, so it names no rewind target. */
+  | { readonly status: 'no-target' }
+  | { readonly status: 'error'; readonly message: string }
+
+/** One block of a steered message, in the shape DSH hands the caller.
+ *
+ *  Deliberately the same shapes a turn's own prompt carries: a steered message
+ *  is resolved by the same code, so its image limits, its verification and the
+ *  wording that hands a file to Claude cannot drift from an ordinary send. */
+export type ClaudeSteerBlock =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'file'; readonly attachment: FileAttachmentRef }
+  | { readonly type: 'image'; readonly attachment: ImageAttachmentRef }
+
+/** A steered message: plain text, or the content blocks a message arrived as. */
+export type ClaudeSteerContent = string | readonly ClaudeSteerBlock[]
 
 /** The steering entry point this package publishes on the Cordis service named
  *  by `CLAUDE_STEERING_SERVICE`. */
@@ -62,16 +119,13 @@ export interface ClaudeSteeringService {
   /**
    * Hand one user message to the turn `sessionId` is running.
    * @param sessionId - DSH session id whose Claude preset is running.
-   * @param prompt - the message content, already the user's own.
+   * @param content - the message text, or its content blocks when it carried
+   *   attachments.
    * @returns `delivered` once the running turn owns it, `unavailable` when there
    *   is no running turn to steer — keep the message for a later turn.
    */
-  deliver(sessionId: string, prompt: SDKUserMessage['message']['content']): ClaudeSteeringOutcome
+  deliver(sessionId: string, content: ClaudeSteerContent): Promise<ClaudeSteeringOutcome>
 }
-/** How long a disconnect waits for the dead process to be reaped, so the
- *  failure can say how it ended. A process that died for its own reasons
- *  resolves immediately; this only bounds the case where it has not died. */
-export const DISCONNECT_EXIT_WAIT_MS = 1_000
 
 export type ClaudeSupervisorState =
   | 'starting'
@@ -222,6 +276,10 @@ interface ActiveTurn {
    *  message delivered into it while it ran. A result naming one of these is
    *  this turn's own; anything else is stale or a protocol violation. */
   ownedPromptUuids: Set<string>
+  /** The subset of {@link ownedPromptUuids} that a *user* steered in. The CLI
+   *  books its own internal sends (a background-task report, for one) the same
+   *  way, and only a steered message is news to the reader. */
+  steeredPromptUuids: Set<string>
   phase: 'primary' | 'waiting-tasks' | 'follow-up'
   sawActivity: boolean
   sawTextDelta: boolean
@@ -233,6 +291,12 @@ interface ActiveTurn {
   thinking: string
   /** Newest single-call prompt accounting; what DSH's context meter divides. */
   requestUsage: ClaudeUsage | undefined
+  /** What the CLI spent inside the API for this turn, summed over the results
+   *  it produced, and how many model calls those were. One DSH step here spans
+   *  a whole Claude turn, so these are the only per-turn facts that can carry a
+   *  real generation rate. */
+  apiMs: number
+  modelCalls: number
   /** When this turn was admitted, and when it first put a token on screen.
    *  The transcript has no other clock: activities carry no timestamps. */
   startedAt: number
@@ -243,6 +307,10 @@ interface ActiveTurn {
    *  tool name a result carries none of. Emptied as results arrive, so what
    *  remains when a turn ends is exactly what never got an answer. */
   openCalls: Map<string, string>
+  /** Newest live state published for this turn, and when: the pair that keeps
+   *  a per-token progress stream from becoming a per-token delta stream. */
+  live: ClaudeLiveProgress | undefined
+  liveAt: number
   /** The last list written to the Host to-do dock, so an unchanged one is not rewritten. */
   todoSnapshot?: string
   /** Auto-background timers of the root Bash calls still running, by toolUseId. */
@@ -279,6 +347,9 @@ interface SupervisorEntry {
   lastChainUuid: string | undefined
   /** Whether this process consumed an armed rewind fork target at spawn. */
   consumedRewind: boolean
+  /** Prompt uuid of the turn a cancelled interrupt settled, whose own `result`
+   *  can still arrive after the next turn on this process has started. */
+  interruptedPromptUuid: string | undefined
   /** SDK message types this process has already reported as unknown, so a type
    *  that arrives in a batch leaves one row of evidence instead of one per
    *  frame. A later process records its own first sighting. */
@@ -450,6 +521,7 @@ export class ClaudeSupervisor {
   readonly #queryFactory: ClaudeQueryFactory
   readonly #runDetached: <T>(operation: () => T) => T
   readonly #sidecar: ClaudeSidecarRepository
+  readonly #attachments: ClaudeAttachmentReader | undefined
   readonly #defaultPermissionMode: () => Promise<ClaudePermissionMode | undefined>
   readonly #permissionSelector: () => Promise<ClaudePermissionSelector>
   /** Where a process death is reported. The transcript keeps the failure; this
@@ -478,15 +550,19 @@ export class ClaudeSupervisor {
     queryFactory?: ClaudeQueryFactory
     runDetached?: <T>(operation: () => T) => T
     sidecar?: ClaudeSidecarRepository
+    /** Attachment reader for a steered message that carried files or images.
+     *  Absent means only text can be steered; a message with attachments is
+     *  refused, and the caller keeps it for a later turn. */
+    attachments?: ClaudeAttachmentReader
+    /** Where a process death is reported. The transcript keeps the failure;
+     *  this is what makes it findable afterwards. */
+    logger?: { warn(message: string): void }
     /** The mode a session runs under until it chooses one; absent, the DSH
      *  sandbox alone decides (see permission-mode.ts). */
     defaultPermissionMode?: () => Promise<ClaudePermissionMode | undefined>
     /** Which access control the session obeys; `native` ignores both the
      *  session's recorded choice and the default and reads the sandbox alone. */
     permissionSelector?: () => Promise<ClaudePermissionSelector>
-    /** Where a process death is reported. The transcript keeps the failure;
-     *  this is what makes it findable afterwards. */
-    logger?: { warn(message: string): void }
     /** Mirror of detached tasks into the Host's background-job list. */
     hostJobs?: ClaudeHostJobs
   }) {
@@ -497,6 +573,8 @@ export class ClaudeSupervisor {
     this.#queryFactory = dependencies.queryFactory ?? (params => claudeQuery(params))
     this.#runDetached = dependencies.runDetached ?? (operation => operation())
     this.#sidecar = dependencies.sidecar ?? new ClaudeSidecarRepository()
+    this.#attachments = dependencies.attachments
+    this.#logger = dependencies.logger
     this.#defaultPermissionMode = dependencies.defaultPermissionMode ?? (async () => undefined)
     this.#permissionSelector = dependencies.permissionSelector ?? (async () => 'plugin')
     this.#logger = dependencies.logger
@@ -576,35 +654,42 @@ export class ClaudeSupervisor {
     return this.#runMetadata(agent, model, query => readPlanUsageFrom(query))
   }
 
-  /** Whether a steered message can reach this session's turn right now.
-   *
-   *  Asked before the caller takes the message out of the agent inbox: a
-   *  message removed for a turn that cannot take it would have to be put back,
-   *  and a restored message has already lost the insertion that would wake an
-   *  idle driver. */
-  canSteer(sessionId: string): boolean {
-    const entry = this.#entries.get(sessionId)
-    const active = entry?.active
-    if (entry === undefined || active === undefined || entry.state !== 'running' || active.aborted) return false
-    return active.ownedPromptUuids.size < MAX_STEERED_PROMPTS_PER_TURN
-  }
-
   /** Deliver one more user message into the turn a session is already running.
    *
    *  Claude Code reads a message pushed into its input stream at the next model
-   *  step of the running turn, which is what steering means here: the turn is
-   *  not restarted and its context is not reloaded. The turn then owns one more
-   *  prompt uuid, so the result that answers the message it was already working
-   *  on no longer looks like a protocol violation.
+   *  step of the running turn, so this is the steering entry point: whoever
+   *  takes a steered message out of the agent inbox hands it here. The turn then
+   *  owns one more prompt uuid, and its result no longer ends the turn while the
+   *  CLI still reports a queued send.
    *
-   *  `unavailable` means there is no live turn to steer, and the caller must
-   *  keep its message for a later turn rather than drop it. */
-  deliverSteering(sessionId: string, prompt: SDKUserMessage['message']['content']): ClaudeSteeringOutcome {
+   *  `unavailable` means there is no live turn to steer — the caller must keep
+   *  its message for a later turn rather than drop it. That is also the answer
+   *  for a message whose attachments cannot be resolved here: the ordinary turn
+   *  path reads them properly, so keeping the message loses nothing. */
+  async deliverSteering(sessionId: string, content: ClaudeSteerContent): Promise<ClaudeSteeringOutcome> {
     const entry = this.#entries.get(sessionId)
     const active = entry?.active
     if (entry === undefined || active === undefined || !this.canSteer(sessionId)) return 'unavailable'
+    let prompt: SDKUserMessage['message']['content']
+    if (typeof content === 'string') {
+      prompt = content
+    } else {
+      // Late, so the checks above answer for a message that could never be
+      // steered before anything is read from disk.
+      const attachments = this.#attachments
+      if (attachments === undefined) return 'unavailable'
+      try {
+        prompt = await resolveDirectUserPrompt([{ role: 'user', source: { kind: 'user' }, content } as never], attachments)
+      } catch {
+        return 'unavailable'
+      }
+    }
+    // The turn may have settled while the attachments were being read; pushing
+    // now would reach a turn nobody is steering.
+    if (entry.active !== active || active.aborted) return 'unavailable'
     const uuid = randomUUID()
     active.ownedPromptUuids.add(uuid)
+    active.steeredPromptUuids.add(uuid)
     entry.input.push(sdkUserMessage(prompt, uuid))
     // Drawn where it arrived. This turn's prose settles as one node when the
     // turn ends, so a message recorded on DSH's surface instead would sit above
@@ -618,6 +703,115 @@ export class ClaudeSupervisor {
       summary: steeredText(prompt),
     })
     return 'delivered'
+  }
+
+  /** Whether a steered message can reach this session's turn right now.
+   *
+   *  Asked before the caller takes the message out of the agent inbox: a
+   *  message removed for a turn that cannot take it would have to be put back,
+   *  and a restored message has already lost the insertion that would wake an
+   *  idle driver. */
+  canSteer(sessionId: string): boolean {
+    const entry = this.#entries.get(sessionId)
+    const active = entry?.active
+    if (entry === undefined || active === undefined || entry.state !== 'running' || active.aborted) return false
+    return active.ownedPromptUuids.size < MAX_STEERED_PROMPTS_PER_TURN
+  }
+
+  /** Tasks this session's live process reported, newest board state first read
+   *  by the caller. Empty for a session with no process to ask. */
+  tasks(sessionId: string): readonly ClaudeTaskInfo[] {
+    const entry = this.#entries.get(sessionId)
+    return entry === undefined || entry.state === 'disposed' ? [] : [...entry.tasks.values()]
+  }
+
+  /** Stop one background task — a detached shell or a subagent — that this
+   *  session's live process owns.
+   *
+   *  Claude keeps such work running across turns, and the CLI's own way to end
+   *  one is a keyboard path a browser does not have. The CLI answers with a
+   *  `task_notification` that settles the board; the board is settled here as
+   *  well, so a notification the CLI decides not to send cannot leave a stopped
+   *  task looking alive. A turn parked waiting on background work resumes on
+   *  the same signal it would have used had the task ended by itself.
+   *
+   *  `unavailable` means there is nothing to stop: no process, a task id this
+   *  process never reported, or a task that already settled. */
+  async stopTask(sessionId: string, taskId: string): Promise<ClaudeStopTaskOutcome> {
+    const entry = this.#entries.get(sessionId)
+    if (entry === undefined || entry.state === 'disposed' || entry.state === 'starting') return 'unavailable'
+    const task = entry.tasks.get(taskId)
+    if (task === undefined || task.status !== 'running') return 'unavailable'
+    try {
+      await entry.query.stopTask(taskId)
+    } catch {
+      // The CLI could not reach the task: leave the board as it was rather than
+      // reporting an ending that did not happen.
+      return 'unavailable'
+    }
+    entry.tasks.set(taskId, { ...task, status: 'stopped' })
+    await this.#scheduleTasksSnapshot(entry, true)
+    await this.#continueAfterTasks(entry)
+    return 'stopped'
+  }
+
+  /** Rewind the files Claude changed back to their state at one user message.
+   *
+   *  This delegates to the SDK rather than replaying the tool arguments DSH
+   *  observes. Claude Code keeps a copy of each file immediately before it
+   *  modifies it, so its answer is derived from real bytes; the arguments on
+   *  DSH's event feed arrive truncated (4,000 characters) and with
+   *  secret-shaped text redacted, which makes them unfit to write back. A
+   *  rewind built from them would silently restore the wrong content in
+   *  exactly the large edits where a rewind matters most.
+   *
+   *  `dryRun` reports what a rewind would touch without touching anything, so
+   *  a caller can show the change list before committing to it.
+   *
+   *  The target is named by turn, not by uuid: the prompt uuid is this plugin's
+   *  own internal handle, so the caller names the turn it can see and this
+   *  method resolves it from the recorded prompts.
+   *
+   *  `unavailable` means there is nothing to ask — no live process, or a turn
+   *  whose prompt uuid was never recorded (it ran before this plugin tracked
+   *  them, or Claude never answered it). A turn with no recorded target is
+   *  reported as such rather than resolved to a nearby turn, because rewinding
+   *  to a different message discards everything between the two. */
+  async rewindFiles(
+    sessionId: string,
+    turn: number,
+    options: { dryRun?: boolean } = {},
+  ): Promise<ClaudeRewindOutcome> {
+    const entry = this.#entries.get(sessionId)
+    if (entry === undefined || entry.state === 'disposed' || entry.state === 'starting') {
+      return { status: 'unavailable' }
+    }
+    // A rewind writes the working tree, so it must not race a turn that is
+    // still editing it. The caller checks this too; the check is repeated here
+    // because this is the last point before the SDK is asked to act.
+    if (entry.state === 'running' || entry.state === 'interrupting') {
+      return { status: 'busy' }
+    }
+
+    let userMessageId: string | undefined
+    try {
+      const projection = await this.#sidecar.read(sessionId)
+      userMessageId = rewindPromptFor(projection.rewind ?? EMPTY_REWIND_STATE, turn)
+    } catch {
+      return { status: 'unavailable' }
+    }
+    if (userMessageId === undefined) return { status: 'no-target' }
+
+    try {
+      const result = await this.#control(
+        entry,
+        entry.query.rewindFiles(userMessageId, options),
+        'Claude Code file rewind',
+      )
+      return { status: 'ok', result: { ...result } }
+    } catch (error) {
+      return { status: 'error', message: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   runTurn(request: ClaudeTurnRequest): Promise<AsyncIterable<ClaudeTurnStreamEvent>> {
@@ -870,11 +1064,16 @@ export class ClaudeSupervisor {
       transcriptTextOrdinal: undefined,
       thinking: '',
       requestUsage: undefined,
+      apiMs: 0,
+      modelCalls: 0,
       startedAt: Date.now(),
       firstOutputAt: undefined,
       aborted: false,
       deniedToolUseIds: new Set(),
       openCalls: new Map(),
+      steeredPromptUuids: new Set(),
+      live: undefined,
+      liveAt: 0,
       backgroundTimers: new Map(),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     }
@@ -1229,6 +1428,7 @@ export class ClaudeSupervisor {
       expectedResume: startFresh || forkAt !== undefined ? undefined : binding?.claudeSessionId,
       lastChainUuid: undefined,
       consumedRewind: pendingRewind !== undefined,
+      interruptedPromptUuid: undefined,
       reportedUnknownTypes: new Set<string>(),
       initialized: false,
       idleTimer: undefined,
@@ -1262,6 +1462,17 @@ export class ClaudeSupervisor {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: PLAN_MODE_HANDOFF_PROMPT },
       tools: { type: 'preset', preset: 'claude_code' },
       includePartialMessages: true,
+      // Claude Code keeps a copy of every file it is about to modify, so a
+      // turn's edits can be rewound to their pre-turn bytes through the SDK's
+      // `rewindFiles`. That is a stronger guarantee than reconstructing a file
+      // from the tool arguments DSH observes: those arrive truncated and
+      // redacted, which makes them unfit for writing back. The snapshots live
+      // in the CLI's own store and are pruned by it.
+      enableFileCheckpointing: true,
+      // Opt-in: the CLI emits hook lifecycle frames only when asked. Without
+      // them a hook that holds a turn is indistinguishable from a slow model,
+      // and the frames cost nothing when no hook is configured.
+      includeHookEvents: true,
       // The Host job list renders a per-task stop control (see host-jobs.ts).
       perTaskStopAffordance: true,
       // Subagent prose reaches the sidecar under its parent call, so a teammate
@@ -1400,10 +1611,15 @@ export class ClaudeSupervisor {
         // emit a top-level result, correlated or not. Publish that prose as a
         // completed progress block, but keep the original DSH turn open until
         // every owned task settles and the explicit final report returns.
+        this.#tallyResult(active, message)
         await this.#completeProgressSegment(active, message)
         return
       }
       if (message.userMessageUuid !== undefined && !active.ownedPromptUuids.has(message.userMessageUuid)) {
+        // The cancelled turn's own result, settling after this process picked up
+        // the next one: it named the prompt an interrupt already failed, so it
+        // must not be read as a protocol violation against the live request.
+        if (message.userMessageUuid === entry.interruptedPromptUuid) return
         if (active.phase === 'follow-up') {
           // The CLI reacts to the last task notification on its own, and a
           // report prompt that lands mid-reaction is folded into that turn
@@ -1439,6 +1655,7 @@ export class ClaudeSupervisor {
     switch (message.kind) {
       case 'text-delta':
         if (message.parentToolUseId !== undefined) return
+        this.#setLive(active, { state: 'thinking' })
         active.sawTextDelta = true
         active.text += message.text
         active.transcriptText += message.text
@@ -1508,6 +1725,7 @@ export class ClaudeSupervisor {
           await this.#writeTodos(active, entry.taskBoard.todos())
         }
         if (message.parentToolUseId === undefined) {
+          this.#setLive(active, { state: 'tool', label: message.toolName })
           active.openCalls.set(message.toolUseId, message.toolName)
           this.#armAutoBackground(entry, active, message.toolUseId, message.toolName, message.input)
           // Only root calls are mirrored: a subagent's nested tools belong to
@@ -1520,6 +1738,7 @@ export class ClaudeSupervisor {
         }
         return
       case 'tool-result':
+        if (message.parentToolUseId === undefined) this.#setLive(active, { state: 'waiting' })
         active.openCalls.delete(message.toolUseId)
         this.#disarmAutoBackground(active, message.toolUseId)
         if (entry.taskBoard.result(message.toolUseId, [message.output, message.content], message.isError)) {
@@ -1549,6 +1768,13 @@ export class ClaudeSupervisor {
           isError: message.phase === 'failed',
         })
         return
+      case 'request-usage':
+        // The CLI's per-call prompt sample: the only real per-request usage it
+        // emits, and what this plugin's own meter would be divided by — except
+        // that meter is built from the CLI's context report instead, and DSH is
+        // deliberately told no prompt side at all (see `#reportedUsage`). A
+        // message shape that no longer feeds anything is still a known shape:
+        // it is absorbed here so it cannot be drawn as an activity.
       case 'request-usage': {
         // A subagent call bills against its own context, so it never stands in
         // for the main conversation's size.
@@ -1579,6 +1805,23 @@ export class ClaudeSupervisor {
           },
         })
         return
+      case 'progress':
+        // A progress frame has already done its one job above: `sawActivity`
+        // separates an unknown outcome from a clean disconnect when the CLI dies
+        // mid-turn. Nothing durable follows from it — the SDK emits these per
+        // estimated thinking-token chunk, and every durable row would cost a
+        // full sidecar rewrite. What it does feed is the live state a reader
+        // watches: which tool is running, and for how long.
+        if (message.toolName !== undefined && message.parentToolUseId === undefined) {
+          this.#setLive(active, {
+            state: 'tool',
+            label: message.toolName,
+            ...(message.elapsedMs === undefined ? {} : { elapsedMs: message.elapsedMs }),
+          })
+        } else if (message.subtype === 'thinking_tokens') {
+          this.#setLive(active, { state: 'thinking' })
+        }
+        return
       case 'unknown':
         // The CLI grows message types steadily, and a new one arrives in batches
         // of identical frames. One row per type is the evidence worth keeping;
@@ -1592,6 +1835,64 @@ export class ClaudeSupervisor {
           detail: message.detail,
         })
         return
+      case 'command-lifecycle': {
+        // The prompt that opened this turn IS this turn, and the CLI books its
+        // own internal sends (a background-task report) the same way; neither
+        // is news. A message the reader steered in while the turn ran has no
+        // other evidence anywhere, and this frame is what tells its sender the
+        // CLI heard it.
+        if (!active.steeredPromptUuids.has(message.commandUuid)) return
+        const cancelled = message.state === 'cancelled'
+        const settled = message.state === 'completed' || cancelled
+        await this.#appendActivity(active, {
+          kind: 'status',
+          // 'updated' while it is still waiting: a queued send has not run yet,
+          // which is exactly what an open row means. The response settles it.
+          phase: settled ? (cancelled ? 'failed' : 'completed') : 'updated',
+          commandUuid: message.commandUuid,
+          title: cancelled
+            ? 'Claude Code dropped your queued message'
+            : message.state === 'completed'
+              ? 'Claude Code ran your queued message'
+              : message.state === 'started'
+                ? 'Claude Code picked up your queued message'
+                : 'Claude Code queued your message',
+          ...(cancelled
+            ? { summary: 'it was cancelled before Claude read it' }
+            : message.state === 'queued'
+              ? { summary: 'Claude reads it at the next step of this turn' }
+              : {}),
+          ...(cancelled ? { isError: true } : {}),
+        })
+        return
+      }
+      case 'hook': {
+        // One row per invocation, closed by its response: without the fold a
+        // slow hook would look like two hooks.
+        await this.#appendActivity(active, {
+          kind: 'status',
+          phase: message.state === 'started' ? 'updated' : message.state === 'failed' ? 'failed' : 'completed',
+          hookId: message.hookId,
+          ...(message.hookName === undefined ? {} : { hookName: message.hookName }),
+          ...(message.hookEvent === undefined ? {} : { hookEvent: message.hookEvent }),
+          title: `Claude Code hook ${message.hookName ?? message.hookEvent ?? message.hookId}`,
+          summary: message.state === 'started'
+            ? `${message.hookEvent ?? 'hook'} running`
+            : message.state === 'failed'
+              ? `${message.hookEvent ?? 'hook'} exited ${String(message.exitCode ?? 1)}`
+              : `${message.hookEvent ?? 'hook'} finished`,
+          ...(message.state === 'failed' ? { isError: true } : {}),
+          ...(message.output === undefined ? {} : { detail: message.output }),
+        })
+        return
+      }
+      case 'status':
+      case 'warning':
+        // A status frame that names the state the turn is in feeds the live
+        // indicator: compaction blocks a turn for as long as it takes and
+        // prints nothing while it runs, so the reader would otherwise see a
+        // pill that stopped moving.
+        if (message.kind === 'status' && message.live !== undefined) this.#setLive(active, { state: message.live })
       case 'status':
       case 'warning':
         // One-shot notices (an API retry, a hook echo) have no later event to
@@ -1637,8 +1938,37 @@ export class ClaudeSupervisor {
       ...usage,
       durationMs: Math.max(0, now - active.startedAt),
       ...(active.firstOutputAt === undefined ? {} : { ttftMs: Math.max(0, active.firstOutputAt - active.startedAt) }),
+      ...(active.apiMs === 0 ? {} : { apiMs: active.apiMs }),
+      ...(active.modelCalls === 0 ? {} : { modelCalls: active.modelCalls }),
     }
   }
+
+  /** Fold one of the turn's results into the turn's own running facts.
+   *
+   *  `num_turns` is that result's own model calls, and they simply add up: one
+   *  DSH step here spans a whole Claude turn, so the session's statistics are
+   *  the sum of what its results did. `duration_api_ms` is NOT per result like
+   *  that — it is cumulative per query() call, exactly like the cost counter, so
+   *  it is read as an epoch delta: a reading lower than the last one belongs to
+   *  a process that just started.
+   *
+   *  Both are what a generation rate needs, and neither can be derived on the
+   *  client: the wall clock here covers tool execution, and the client has no
+   *  timestamps at all. */
+  #tallyResult(active: ActiveTurn, result: Extract<NormalizedSdkMessage, { kind: 'result' }>): void {
+    if (result.modelCalls !== undefined) active.modelCalls += Math.max(0, result.modelCalls)
+    if (result.apiMs === undefined) return
+    const sessionId = active.agent.id as string
+    const previous = this.#apiCounter.get(sessionId)
+    this.#apiCounter.set(sessionId, result.apiMs)
+    const delta = previous === undefined || result.apiMs < previous ? result.apiMs : result.apiMs - previous
+    active.apiMs += Math.max(0, delta)
+  }
+
+  /** The newest cumulative `duration_api_ms` reading per session. Kept per
+   *  session rather than per turn because the counter outlives the turn it is
+   *  read in, and resets when the process is replaced. */
+  readonly #apiCounter = new Map<string, number>()
 
   /** Register one presenter-only mirror for a tool name the static preset
    *  registry does not cover (MCP tools, newly added built-ins). Runs in the
@@ -1841,23 +2171,29 @@ export class ClaudeSupervisor {
     await this.#sidecar.writeTasks(entry.sessionId, [...entry.tasks.values()]).catch(() => undefined)
   }
 
-  /** What DSH is told about token usage: newest call's prompt, whole turn's output.
+  /** What DSH is told about token usage: the turn's output, and a zero prompt.
    *
-   *  `TokenUsage` is documented as "token accounting for ONE model call", and
-   *  DSH's token meter divides `uncachedInput + cacheRead + cacheWrite` by the
-   *  context window to draw context pressure. One Claude turn makes many calls
-   *  and the CLI's result usage sums all of them, so reporting that sum pinned
-   *  the meter at 100%: a 35-call turn reads the same prompt from cache 35
-   *  times, which sums past the window without the conversation ever growing.
-   *  The newest single call answers "how big is this conversation now".
+   *  `TokenUsage` is documented as accounting for ONE model call, and DSH's
+   *  token meter divides `uncachedInput + cacheRead + cacheWrite` by the context
+   *  window to draw pressure — the number its compaction engine acts on above
+   *  80% of that window. One Claude turn makes many calls, so the prompt side of
+   *  a result is a sum that pins the meter over the window; the newest single
+   *  call answers "how big is this conversation now" and would put a session
+   *  that is genuinely large over the threshold.
    *
-   *  Output is deliberately excluded from that pressure sum, so the same
-   *  argument never applied to it — and taking it from the newest call reported
-   *  whatever the wrap-up message happened to cost, which is a couple of tokens
-   *  after a turn that wrote thousands. The turn total is the honest figure.
+   *  Either way the number describes a context DSH does not hold: this preset's
+   *  conversation lives in Claude Code, which compacts on its own, and the plugin
+   *  reports the CLI's occupancy in its own meter. Reporting the prompt side only
+   *  bought a compaction attempt that this plugin's adapter must refuse. So the
+   *  preset reports the output side alone — the prompt side is zero, pressure
+   *  stays at nothing, DSH's compaction never engages on a session whose context
+   *  belongs to the CLI, and every user-facing figure for this preset comes from
+   *  the plugin's own reading of the CLI, in the statistics it draws above the
+   *  composer.
    *
-   *  The sidecar activity keeps the whole turn total for both — that is the
-   *  audit and cost record, and nothing divides it by a window. */
+   *  The sidecar activity keeps the whole turn total — input, cache, and output —
+   *  because that is the audit and cost record, and nothing divides it by a
+   *  window. */
   #reportedUsage(
     active: ActiveTurn,
     result: Extract<NormalizedSdkMessage, { kind: 'result' }>,
@@ -1898,6 +2234,10 @@ export class ClaudeSupervisor {
     active: ActiveTurn,
     result: Extract<NormalizedSdkMessage, { kind: 'result' }>,
   ): Promise<void> {
+    // Fold this result's own facts in first: the row below reports the turn's
+    // running model-call count and its share of the API clock, which only this
+    // result can advance.
+    this.#tallyResult(active, result)
     if (result.usage.inputTokens === undefined && result.usage.outputTokens === undefined && result.usage.cumulativeCostUsd === undefined) return
     // `cumulativeCostUsd` is per query() call, and a respawned Claude process
     // starts a new one, so a session that respawned mid-conversation would
@@ -1955,6 +2295,8 @@ export class ClaudeSupervisor {
     result: Extract<NormalizedSdkMessage, { kind: 'result' }>,
   ): Promise<void> {
     if (entry.active !== active) return
+    // Whatever the turn was doing, it is not doing it any more.
+    this.#clearLive(active)
     if (active.aborted) {
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
@@ -2082,6 +2424,11 @@ export class ClaudeSupervisor {
    *  later rewind of the following turn can fork exactly here. Best effort:
    *  a missing anchor only makes a rewind fall back to an earlier turn. */
   async #recordChainAnchor(entry: SupervisorEntry, active: ActiveTurn): Promise<void> {
+    // Recorded together with the anchor: both are written once per settled turn
+    // and both are read by the checkpoint that follows, so sequencing them here
+    // keeps one persistence point rather than scattering them across the two
+    // settlement paths that call this.
+    await this.#recordRewindPrompt(entry, active)
     const uuid = entry.lastChainUuid
     if (uuid === undefined) return
     try {
@@ -2091,8 +2438,52 @@ export class ClaudeSupervisor {
     }
   }
 
-  async #upsertTranscriptText(active: ActiveTurn): Promise<void> {
-    if (active.transcriptText.length === 0) return
+  /** Pin the user message one settled turn was opened by.
+   *
+   *  Claude Code's file rewind is addressed by that uuid, and this plugin is
+   *  what mints it, so recording it here is what lets a turn on screen name its
+   *  own rewind target.
+   *
+   *  Recorded only for a turn Claude actually answered. A prompt that was still
+   *  queued when the turn ended never became a message the CLI can address, so
+   *  storing its uuid would offer a rewind target that does not exist — and a
+   *  rewind that silently finds nothing is worse than a card that says so. */
+  async #recordRewindPrompt(entry: SupervisorEntry, active: ActiveTurn): Promise<void> {
+    if (!active.sawActivity) return
+    try {
+      await this.#sidecar.recordRewindPrompt(entry.sessionId, active.cursor.turn, active.promptUuid)
+    } catch {
+      // Advisory in the same way the chain anchor is: a turn whose prompt uuid
+      // was not recorded simply offers no file rewind.
+    }
+  }
+
+  /** Publish what this turn is doing right now, once per actual change.
+   *
+   *  The CLI streams thinking estimates per token chunk and a tool heartbeat
+   *  every few hundred milliseconds; forwarding each one would rebuild the
+   *  flood the activity log was just cured of. Only a state change is news, and
+   *  the tool clock is news at most once a second — which is as often as a
+   *  reader can read it. */
+  #setLive(active: ActiveTurn, next: Omit<ClaudeLiveProgress, 'turn'>): void {
+    const now = Date.now()
+    const value: ClaudeLiveProgress = { turn: active.cursor.turn, ...next }
+    const previous = active.live
+    const changedState = previous?.state !== value.state || previous.label !== value.label
+    if (!changedState && now - active.liveAt < LIVE_ELAPSED_INTERVAL_MS) return
+    active.live = value
+    active.liveAt = now
+    this.#sidecar.notifyLive(active.agent.id as string, value)
+  }
+
+  /** Stop reporting a turn's state: the state it was reporting is over. */
+  #clearLive(active: ActiveTurn): void {
+    if (active.live === undefined) return
+    active.live = undefined
+    this.#sidecar.notifyLive(active.agent.id as string, undefined)
+  }
+
+  async #upsertTranscriptText(active: ActiveTurn): Promise<void> {    if (active.transcriptText.length === 0) return
     const ordinal = active.transcriptTextOrdinal ?? active.cursor.nextOrdinal++
     active.transcriptTextOrdinal = ordinal
     try {
@@ -2272,6 +2663,16 @@ export class ClaudeSupervisor {
     }
   }
 
+  /** Stop the turn a cancelled DSH request owns.
+   *
+   *  `interrupt()` only stops the current turn: the process itself stays usable,
+   *  which is what makes "stop, then ask something else" cheap. So a clean
+   *  interrupt — one the CLI answers with a receipt that does not list the
+   *  submitted prompt as still queued — leaves the process idle and owned, and
+   *  the next turn reuses it instead of respawning Claude and resuming the
+   *  session from disk. Every other outcome (a CLI too old to answer, a prompt
+   *  the CLI kept queued, a timed-out interrupt) leaves the process in a state
+   *  this plugin cannot vouch for, and it is torn down exactly as before. */
   async #interrupt(entry: SupervisorEntry): Promise<void> {
     const active = entry.active
     if (active === undefined || entry.state === 'interrupting') return
@@ -2280,8 +2681,9 @@ export class ClaudeSupervisor {
     active.output.fail(abortFailure())
     await this.#upsertTranscriptText(active)
     let interruptError: unknown
+    let receipt: SDKControlInterruptResponse | undefined
     try {
-      const receipt = await withTimeout(entry.query.interrupt(), CLAUDE_INTERRUPT_TIMEOUT_MS, 'Claude Code interrupt')
+      receipt = await withTimeout(entry.query.interrupt(), CLAUDE_INTERRUPT_TIMEOUT_MS, 'Claude Code interrupt')
       const queued = receipt?.still_queued ?? []
       if (queued.includes(active.promptUuid)) {
         throw new Error(`Claude Code interrupt left submitted prompt ${active.promptUuid} queued`)
@@ -2290,15 +2692,31 @@ export class ClaudeSupervisor {
       interruptError = error
     }
     await this.#settleOpenCalls(active, 'Cancelled with the turn').catch(() => undefined)
+    // The CLI settles the cancelled turn with a result of its own, which can land
+    // after the next turn on this process has started; remember whose it is. The
+    // chain anchor goes with it: it described the turn that no longer counts.
+    entry.interruptedPromptUuid = active.promptUuid
+    entry.lastChainUuid = undefined
+    if (active.signal !== undefined && active.abortListener !== undefined) {
+      active.signal.removeEventListener('abort', active.abortListener)
+    }
+    const reusable = interruptError === undefined && receipt !== undefined
     try {
       await this.#appendActivity(active, {
         kind: 'status',
         phase: 'failed',
-        title: interruptError === undefined ? 'Claude Code turn cancelled' : 'Claude Code cancelled; process entry reset',
+        title: reusable ? 'Claude Code turn cancelled' : 'Claude Code cancelled; process entry reset',
         ...(interruptError === undefined ? {} : { summary: errorSummary(interruptError) }),
       })
     } catch {
       // The active output is already aborted; process cleanup cannot wait for audit availability.
+    }
+    entry.active = undefined
+    if (reusable && this.#entries.get(entry.sessionId) === entry) {
+      entry.state = 'idle'
+      entry.lastUsedAt = Date.now()
+      this.#armIdleTimer(entry)
+      return
     }
     if (this.#entries.get(entry.sessionId) === entry) this.#entries.delete(entry.sessionId)
     await this.#disposeEntry(entry, 'turn interrupt cleanup')
@@ -2323,6 +2741,7 @@ export class ClaudeSupervisor {
       `dsh-claude: Claude Code for ${entry.sessionId} stopped (${status})${active === undefined ? ' with no turn running' : active.sawActivity ? ' mid-turn after activity' : ' before the turn produced anything'}${stderr === undefined || stderr.length === 0 ? '' : `; stderr: ${redactText(stderr.slice(-400))}`}`,
     )
     if (active !== undefined) {
+      this.#clearLive(active)
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
       if (active.signal !== undefined && active.abortListener !== undefined) {

@@ -86,10 +86,12 @@ describe('Claude sidecar repository', () => {
       ],
     })}\n`)
     const projection = await store.read('session')
-    expect(projection.activities.map(item => item.ordinal)).toEqual([2, 5])
+    expect(projection.activities.map(item => item.ordinal)).toEqual([2])
+    // The next write rebuilds the document without them, so a session that
+    // accumulated a full window of telemetry stops paying for it.
     await store.appendActivity('session', { turn: 1, step: 1, ordinal: 7, kind: 'tool-result', toolName: 'Read', title: 'Read' })
     const stored = JSON.parse(await readFile(join(store.root, file), 'utf8')) as { activities: { ordinal: number }[] }
-    expect(stored.activities.map(item => item.ordinal)).toEqual([2, 5, 7])
+    expect(stored.activities.map(item => item.ordinal)).toEqual([2, 7])
   })
 
   it('upserts redacted visible transcript text at a stable ordinal', async () => {
@@ -279,6 +281,68 @@ describe('Claude sidecar repository', () => {
     await store.writeContextUsage('session', { model: 'default', totalTokens: 1, maxTokens: 10, percentage: 10, categories: [] })
     expect(kinds).toEqual(['activity', 'tasks', 'contextUsage'])
     unsubscribe()
+  })
+
+  it('keeps the whole context report across a write and a read', async () => {
+    // The meter reads these back out of the projection, so what the CLI said
+    // about the window, auto-compaction and the message mix has to survive the
+    // document, not just the write that produced it.
+    const store = await repository()
+    await store.writeContextUsage('session', {
+      model: 'claude-opus-5[1M]',
+      totalTokens: 540_000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      percentage: 54,
+      categories: [{ name: 'Messages', tokens: 445_000, color: '#3b82f6' }],
+      isAutoCompactEnabled: true,
+      autoCompactThreshold: 967_000,
+      messageBreakdown: {
+        toolCallTokens: 40_000,
+        toolResultTokens: 380_000,
+        attachmentTokens: 0,
+        assistantMessageTokens: 20_000,
+        userMessageTokens: 5_000,
+        redirectedContextTokens: 0,
+        unattributedTokens: 0,
+      },
+    })
+    const stored = JSON.parse(await readFile(join(store.root, `${Buffer.from('session').toString('base64url')}.json`), 'utf8')) as { contextUsage: unknown }
+    const reread = await store.read('session')
+    for (const value of [stored.contextUsage, reread.contextUsage]) {
+      expect(value).toMatchObject({
+        rawMaxTokens: 1_000_000,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 967_000,
+        messageBreakdown: { toolResultTokens: 380_000 },
+      })
+    }
+  })
+
+  it('streams what a running turn is doing without writing any of it', async () => {
+    const store = await repository()
+    const deltas: ClaudeSidecarDelta[] = []
+    const unsubscribe = store.subscribe('session', delta => deltas.push(delta))
+    store.notifyLive('session', { turn: 1, state: 'thinking' })
+    store.notifyLive('session', { turn: 1, state: 'tool', label: 'Bash', elapsedMs: 4_000 })
+    store.notifyLive('session', undefined)
+    expect(deltas).toEqual([
+      { kind: 'live', value: { turn: 1, state: 'thinking' }, seq: 1 },
+      { kind: 'live', value: { turn: 1, state: 'tool', label: 'Bash', elapsedMs: 4_000 }, seq: 2 },
+      { kind: 'live', value: undefined, seq: 3 },
+    ])
+    // A state nobody is watching costs nothing, not even a number.
+    unsubscribe()
+    store.notifyLive('session', { turn: 1, state: 'thinking' })
+    expect(store.sequence('session')).toBe(3)
+  })
+
+  it('keeps live state out of the durable document', async () => {
+    const store = await repository()
+    store.notifyLive('session', { turn: 1, state: 'thinking' })
+    // None of it reaches the document.
+    await expect(readdir(store.root)).resolves.toHaveLength(0)
+    await expect(store.read('session')).resolves.toMatchObject({ activities: [] })
   })
 
   it('offers and withdraws a prompt suggestion, and skips a clear that changes nothing', async () => {

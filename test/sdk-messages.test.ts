@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { normalizeSdkMessage } from '../src/sdk-messages.ts'
+import { API_RETRY_TITLE } from '../src/constants.ts'
 
 const sdk = (value: unknown) => value as SDKMessage
 
@@ -21,6 +22,26 @@ describe('Claude SDK message normalization', () => {
       type: 'stream_event',
       event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello' } },
     }))).toEqual([{ kind: 'text-delta', text: 'hello' }])
+  })
+
+  it('takes one request\'s own usage off the partial stream', () => {
+    // The assistant message for the same request carries placeholder zeros, and
+    // the result reports the turn's sum; this frame is the single request.
+    expect(normalizeSdkMessage(sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 2_129, output_tokens: 67, cache_read_input_tokens: 14_080 } },
+    }))).toEqual([{ kind: 'request-usage', usage: { inputTokens: 2_129, outputTokens: 67, cacheReadTokens: 14_080 } }])
+    // A subagent request keeps its parent, so the supervisor can leave it out of
+    // the main conversation's size.
+    expect(normalizeSdkMessage(sdk({
+      type: 'stream_event',
+      parent_tool_use_id: 'task-1',
+      event: { type: 'message_delta', usage: { input_tokens: 10, output_tokens: 2 } },
+    }))).toEqual([{ kind: 'request-usage', usage: { inputTokens: 10, outputTokens: 2 }, parentToolUseId: 'task-1' }])
+    // A frame carrying nothing countable is not a sample.
+    expect(normalizeSdkMessage(sdk({ type: 'stream_event', event: { type: 'message_delta', usage: {} } }))).toEqual([])
+    expect(normalizeSdkMessage(sdk({ type: 'stream_event', event: { type: 'message_start', message: { usage: { input_tokens: 0 } } } }))).toEqual([])
   })
 
   it('normalizes assistant tool use and completed thinking', () => {
@@ -186,7 +207,8 @@ describe('Claude SDK message normalization', () => {
   it('consumes tool-progress heartbeats as progress instead of activity', () => {
     // The CLI emits one of these while a tool runs. Like the thinking-token
     // frames they are telemetry no row renders, and the unknown-type fallback
-    // used to store every heartbeat as a warning.
+    // used to store every heartbeat as a warning. What they do carry — which
+    // tool, and how long it has been running — is the live state.
     expect(normalizeSdkMessage(sdk({
       type: 'tool_progress',
       tool_use_id: 'tool-1',
@@ -195,17 +217,17 @@ describe('Claude SDK message normalization', () => {
       elapsed_time_seconds: 12,
       uuid: 'uuid-2',
       session_id: 'session-1',
-    }))).toEqual([{ kind: 'progress', subtype: 'tool_progress' }])
-  })
-
-  it('treats command lifecycle transitions as telemetry, not unknown messages', () => {
+    }))).toEqual([{ kind: 'progress', subtype: 'tool_progress', toolName: 'Bash', elapsedMs: 12_000 }])
+    // A subagent's tool is not the turn's own work; the frame keeps its parent.
     expect(normalizeSdkMessage(sdk({
-      type: 'command_lifecycle',
-      command_uuid: 'command-1',
-      state: 'queued',
+      type: 'tool_progress',
+      tool_use_id: 'tool-2',
+      tool_name: 'Read',
+      parent_tool_use_id: 'task-1',
+      elapsed_time_seconds: 1,
       uuid: 'uuid-3',
       session_id: 'session-1',
-    }))).toEqual([{ kind: 'progress', subtype: 'command_lifecycle' }])
+    }))).toEqual([{ kind: 'progress', subtype: 'tool_progress', toolName: 'Read', elapsedMs: 1_000, parentToolUseId: 'task-1' }])
   })
 
   it('normalizes successful result usage', () => {
@@ -314,5 +336,98 @@ describe('Claude SDK message normalization', () => {
       rate_limit_info: { status: 'blocked', rateLimitType: 'five_hour' },
     }))
     expect(blocked).toMatchObject([{ kind: 'status', title: 'Claude rate limit is blocking requests' }])
+  })
+
+  it('reads a retry as a wait the user can understand', () => {
+    const retry = { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, retry_delay_ms: 4_800, error_status: 429, error: 'rate_limit_error' }
+    // The title is the shared constant: the Client folds a run of these rows
+    // into one by it, so it may not be restated here.
+    expect(normalizeSdkMessage(sdk(retry))).toEqual([{
+      kind: 'warning',
+      title: API_RETRY_TITLE,
+      summary: 'attempt 2 of 5 · HTTP 429',
+      detail: retry,
+    }])
+    // A CLI that names neither count still says what it is doing.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'api_retry' })))
+      .toMatchObject([{ kind: 'warning', title: API_RETRY_TITLE }])
+  })
+
+  it('folds a hook invocation onto one row and reports how it ended', () => {
+    const started = { type: 'system', subtype: 'hook_started', hook_id: 'h1', hook_name: 'format', hook_event: 'PostToolUse' }
+    expect(normalizeSdkMessage(sdk(started))).toEqual([{
+      kind: 'hook',
+      hookId: 'h1',
+      state: 'started',
+      hookName: 'format',
+      hookEvent: 'PostToolUse',
+    }])
+    const failed = { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'format', hook_event: 'PostToolUse', output: 'prettier: command not found', stderr: '', exit_code: 127 }
+    expect(normalizeSdkMessage(sdk(failed))).toEqual([{
+      kind: 'hook',
+      hookId: 'h1',
+      state: 'failed',
+      hookName: 'format',
+      hookEvent: 'PostToolUse',
+      exitCode: 127,
+      output: 'prettier: command not found',
+    }])
+    const passed = { type: 'system', subtype: 'hook_response', hook_id: 'h2', hook_name: 'format', hook_event: 'PostToolUse', output: 'ok', exit_code: 0 }
+    expect(normalizeSdkMessage(sdk(passed))).toEqual([{
+      kind: 'hook',
+      hookId: 'h2',
+      state: 'completed',
+      hookName: 'format',
+      hookEvent: 'PostToolUse',
+      exitCode: 0,
+      output: 'ok',
+    }])
+    // Progress frames stay telemetry: they carry no lifecycle of their own.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'hook_progress', hook_id: 'h1', hook_name: 'format', output: 'chunk' })))
+      .toEqual([{ kind: 'progress', subtype: 'hook_progress' }])
+    // A response with no id to fold on still reports a failure, because a hook
+    // that fails can block the turn.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'hook_response', hook_name: 'format', hook_event: 'PostToolUse', output: 'boom', exit_code: 2 })))
+      .toMatchObject([{ kind: 'warning', title: 'Claude Code hook format' }])
+  })
+
+  it('names what a status frame says the turn is doing, and reports a compaction that failed', () => {
+    // Compaction blocks a turn for as long as it takes and prints nothing while
+    // it runs, so the frame that announces it is the only thing to show.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: 'compacting' })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code compacting', live: 'compacting' }])
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: 'requesting' })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code requesting', live: 'thinking' }])
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: null })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code is ready' }])
+    // A failed compaction is the one thing this frame must not swallow.
+    expect(normalizeSdkMessage(sdk({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'Not enough messages to compact.',
+    }))).toMatchObject([{
+      kind: 'warning',
+      title: 'Claude Code could not compact the conversation',
+      summary: 'Not enough messages to compact.',
+    }])
+    // A successful one is drawn by the boundary that follows it.
+    expect(normalizeSdkMessage(sdk({ type: 'system', subtype: 'status', status: null, compact_result: 'success' })))
+      .toMatchObject([{ kind: 'status', title: 'Claude Code is ready' }])
+  })
+
+  it('reads a prompt the CLI accepted and answers for it by uuid', () => {
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'queued' })))
+      .toEqual([{ kind: 'command-lifecycle', commandUuid: 'p1', state: 'queued' }])
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'completed' })))
+      .toEqual([{ kind: 'command-lifecycle', commandUuid: 'p1', state: 'completed' }])
+    // A frame that cannot be matched to a send is telemetry, not evidence: the
+    // turn lifecycle already tells the same story, and the CLI books its own
+    // internal sends through this frame too.
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'p1', state: 'rewound' })))
+      .toMatchObject([{ kind: 'progress', subtype: 'command_lifecycle' }])
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', state: 'queued' })))
+      .toMatchObject([{ kind: 'progress', subtype: 'command_lifecycle' }])
   })
 })

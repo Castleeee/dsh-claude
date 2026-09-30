@@ -17,19 +17,23 @@ import {
   type ClaudeActivityKind,
   type ClaudeContextUsageEvent,
   type ClaudeContextUsageInput,
+  type ClaudeLiveProgress,
   type ClaudeSessionBoundEvent,
   type ClaudeTaskInfo,
   type ClaudeTasksEvent,
 } from './events.ts'
-import { CLAUDE_ACTIVITY_EVENT, CLAUDE_PROGRESS_SUBTYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, SDK_VERSION, claudeStatusTitle, type ClaudeRenderMode } from './constants.ts'
+import { CLAUDE_ACTIVITY_EVENT, CLAUDE_PROGRESS_SUBTYPES, CLAUDE_SETTLED_MESSAGE_TYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, SDK_VERSION, claudeStatusTitle, type ClaudeRenderMode } from './constants.ts'
 import {
   EMPTY_REWIND_STATE,
   MAX_REWIND_ANCHORS,
+  MAX_REWIND_PROMPTS,
   MAX_REWIND_RANGES,
   MAX_REWIND_SNAPSHOTS,
   recordRewindAnchor,
+  recordRewindPrompt,
   recordRewindSnapshot,
   type ClaudeRewindAnchor,
+  type ClaudeRewindPrompt,
   type ClaudeRewindRange,
   type ClaudeRewindSnapshot,
   type ClaudeRewindState,
@@ -71,6 +75,11 @@ export type ClaudeSidecarDelta =
   | { kind: 'promptSuggestion'; value?: string }
   | { kind: 'sync' }
   | { kind: 'checkpoint' }
+  /** What the session's running turn is doing right now, or `undefined` when it
+   *  is doing nothing any more. Never written: it is a state a reader watches,
+   *  not evidence, and the next snapshot is authoritative about everything
+   *  else. */
+  | { kind: 'live'; value: ClaudeLiveProgress | undefined }
 
 /** One delta as subscribers see it: numbered, so a reader that applies them in
  *  order can tell a missing one from a slow one.
@@ -174,12 +183,23 @@ function rewind(value: unknown): ClaudeRewindState | undefined {
       snapshots.push({ turn: snapshot.turn, tree: snapshot.tree })
     }
   }
+  // Same again for prompt uuids, which older documents also predate. A session
+  // without them still reads; it simply has no file-rewind target recorded.
+  const prompts: ClaudeRewindPrompt[] = []
+  if (input.prompts !== undefined) {
+    if (!Array.isArray(input.prompts) || input.prompts.length > MAX_REWIND_PROMPTS) return undefined
+    for (const item of input.prompts) {
+      const prompt = record(item)
+      if (prompt === undefined || !finiteInteger(prompt.turn) || !string(prompt.uuid, 128)) return undefined
+      prompts.push({ turn: prompt.turn, uuid: prompt.uuid })
+    }
+  }
   const pending = record(input.pending)
   if (input.pending !== undefined && pending === undefined) return undefined
-  if (pending === undefined) return { ranges, anchors, snapshots }
-  if (pending.fresh === true) return { ranges, anchors, snapshots, pending: { fresh: true } }
+  if (pending === undefined) return { ranges, anchors, snapshots, prompts }
+  if (pending.fresh === true) return { ranges, anchors, snapshots, prompts, pending: { fresh: true } }
   if (!string(pending.resumeAt, 128)) return undefined
-  return { ranges, anchors, snapshots, pending: { resumeAt: pending.resumeAt } }
+  return { ranges, anchors, snapshots, prompts, pending: { resumeAt: pending.resumeAt } }
 }
 
 function tasks(value: unknown): ClaudeTasksEvent | undefined {
@@ -205,12 +225,14 @@ export function parseClaudeSidecar(value: unknown): ClaudeSidecarProjection {
   // mergeActivities relies on. Both happen once per document read, not once per
   // write: `#update` no longer re-parses the projection it already holds.
   // An unknown-type notice is evidence worth one row per type rather than the
-  // batch the CLI sends, so its repetitions are pruned here as well.
+  // batch the CLI sends, so its repetitions are pruned here as well. A notice
+  // about a type this package has since learned is stale evidence and goes too.
   const retained: ClaudeActivityEvent[] = []
   const reportedUnknownTitles = new Set<string>()
   for (const item of activities as ClaudeActivityEvent[]) {
     if (isProgressActivity(item)) continue
     if (item.kind === 'warning' && item.title?.startsWith(CLAUDE_UNKNOWN_MESSAGE_PREFIX) === true) {
+      if (CLAUDE_SETTLED_MESSAGE_TYPES.has(item.title.slice(CLAUDE_UNKNOWN_MESSAGE_PREFIX.length))) continue
       if (reportedUnknownTitles.has(item.title)) continue
       reportedUnknownTitles.add(item.title)
     }
@@ -400,6 +422,16 @@ export class ClaudeSidecarRepository {
     return this.#flushLive(sessionId)
   }
 
+  /** Publish what the session's running turn is doing, without writing
+   *  anything: the state changes many times a second and none of it is worth a
+   *  disk write. With nobody subscribed there is nothing to publish to, and
+   *  skipping keeps the notification count meaningful — the next snapshot
+   *  states where the stream stands either way. */
+  notifyLive(sessionId: string, value: ClaudeLiveProgress | undefined): void {
+    if (this.#listeners.get(sessionId) === undefined) return
+    this.#notify(sessionId, { kind: 'live', value })
+  }
+
   /** How many notifications this session has published. */
   sequence(sessionId: string): number {
     return this.#seq.get(sessionId) ?? 0
@@ -563,12 +595,26 @@ export class ClaudeSidecarRepository {
     }))
   }
 
+  /** Remember the user message one DSH turn was opened by, so Claude Code's own
+   *  file rewind can be addressed by the turn the user sees. */
+  recordRewindPrompt(sessionId: string, turn: number, uuid: string): Promise<ClaudeSidecarProjection> {
+    return this.#update(sessionId, current => ({
+      ...current,
+      rewind: recordRewindPrompt(current.rewind ?? EMPTY_REWIND_STATE, { turn, uuid }),
+    }))
+  }
+
   /** Disarm the fork target once a Claude process has resumed at it, so a
    *  later respawn continues the rewound session instead of re-truncating it. */
   clearRewindPending(sessionId: string): Promise<ClaudeSidecarProjection> {
     return this.#update(sessionId, current => (current.rewind?.pending === undefined ? current : {
       ...current,
-      rewind: { ranges: current.rewind.ranges, anchors: current.rewind.anchors, snapshots: current.rewind.snapshots },
+      rewind: {
+        ranges: current.rewind.ranges,
+        anchors: current.rewind.anchors,
+        snapshots: current.rewind.snapshots,
+        prompts: current.rewind.prompts,
+      },
     }))
   }
 

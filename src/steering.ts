@@ -73,7 +73,7 @@ export function mountClaudeSteering(
       // The same builder an ordinary send uses, so image limits and the wording
       // a file arrives with cannot drift between a steered message and a turn.
       const prompt = await resolveDirectUserPrompt([message], attachments as SteeringAttachments)
-      if (supervisor.deliverSteering(sessionId, prompt) === 'delivered') {
+      if (await supervisor.deliverSteering(sessionId, prompt as never) === 'delivered') {
         await record(agent, message)
         return
       }

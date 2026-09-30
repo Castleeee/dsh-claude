@@ -18,13 +18,13 @@ The plugin never asks for or stores Claude credentials. Authenticate through the
 
 ### Install from npm
 
-Add the published package to the profile used by your running DSH instance. The commands below use `desktop`; replace it with `web` only for an existing Web profile. Use the DSH CLI supplied by that installation:
+Add the published package to the DSH Web profile:
 
 ```sh
-dsh plugin --profile desktop add @norman-else/dsh-claude
+dsh plugin --profile web add @norman-else/dsh-claude
 ```
 
-Wait for the profile rebuild to finish, then quit DSH Desktop completely and reopen it. Create a new conversation and select **Claude** from the Agent Preset picker.
+Wait for the profile rebuild to finish, then restart DSH Desktop if requested. Create a new conversation and select **Claude** from the Agent Preset picker.
 
 ### Install from source
 
@@ -35,18 +35,16 @@ pnpm install
 pnpm check
 ```
 
-For a checkout already linked to a running Desktop, run builds only after its turns have finished: rebuilding can hot-reload the plugin. Use a separate source copy for validation during active work. See [INSTALL.md](INSTALL.md).
-
 Link the checkout to DSH from PowerShell:
 
 ```powershell
-dsh plugin --profile desktop add "link:$($PWD.Path.Replace('\', '/'))"
+dsh plugin --profile web add "link:$PWD"
 ```
 
 Or from macOS/Linux:
 
 ```sh
-dsh plugin --profile desktop add "link:$(pwd)"
+dsh plugin --profile web add "link:$(pwd)"
 ```
 
 ### Remove the plugin
@@ -70,10 +68,12 @@ Cleanup removes only installer-written content and refuses to delete user-modifi
 ### 3.1 Conversation
 
 - **Native Claude Code conversations** — Runs Claude Code as the main agent in a normal DSH conversation instead of wrapping it as a tool or secondary chat.
-- **Claude preset and model selection** — Adds a `Claude` Agent Preset and reads Claude Code's model catalog. `default`, `opus[1m]`, `fable`, `sonnet`, and `haiku` are fallback choices when the catalog is unavailable.
-- **Thinking effort** — Maps DSH's per-model reasoning effort onto Claude Code's thinking modes — `off`, `low`, `medium`, `high` (Claude Code's own default), `xhigh`, `max`, and `ultracode` — so the conversation's effort control drives extended thinking directly. Models that do not support a mode downgrade silently inside Claude Code; `ultracode` additionally turns on standing dynamic-workflow orchestration and needs an `xhigh`-capable model.
+- **Claude preset and model selection** — Adds a `Claude` Agent Preset and exposes Claude Code's `default`, `opus[1m]`, `fable`, `sonnet`, and `haiku` model choices.
+- **Thinking effort** — Maps DSH's per-model reasoning effort onto Claude Code's thinking modes — `off`, `low`, `medium`, `high` (Claude Code's own default), `xhigh`, `max`, and `ultracode` — so the conversation's effort control drives extended thinking directly. Models that do not support a mode downgrade silently inside Claude Code; `ultracode` additionally turns on standing dynamic-workflow orchestration and needs an `xhigh`-capable model. Moving between modes that a running process accepts goes through one control request instead of a respawn, so the process and the context it already holds survive the change; the modes that are start-time shapes — thinking off, `ultracode`, and the CLI's own default — still rebuild, and a CLI that refuses the request falls back to the old path.
 - **Local Claude environment compatibility** — Preserves the user's existing Claude Code authentication, settings, `CLAUDE.md`, Skills, Hooks, Plugins, tools, and MCP configuration.
 - **Real-time streaming and conversation continuity** — Streams Claude responses and tool activity into DSH while retaining multi-turn context and persisted Claude session resume.
+- **Live turn state** — While a turn runs, the footer under it says what Claude is doing right now — thinking, working through a tool result, or running a named tool with its clock. It is fed by the CLI's own progress telemetry, travels as a state rather than a transcript row, is never written to disk, and disappears with the turn it describes. Changing reasoning effort mid-turn does not disturb it.
+- **Session titles** — Answers DSH's session-title request with a throwaway Haiku turn that runs against the user's own Claude Code settings, so the title is a real summary of the first message. A CLI failure reply is refused rather than accepted: an answer like `Not logged in · Please run /login` is not a title, and rejecting it leaves the session to be titled properly instead of carrying the error text.
 - **DSH permissions and questions** — Routes Claude tool permission requests through DSH approvals and Claude clarification prompts through DSH's native question forms.
 - **Claude Code permission modes** — Behind a **Permission selector** setting (Plugin, or DSH native to keep the Host's three-mode control and the plain sandbox mapping), replaces DSH's three-mode access selector, for Claude sessions only, with Claude Code's own modes in the same seat of the composer's tool row: Plan, Default, Accept edits, Don't ask, Auto, and Bypass permissions, each with its own glyph, bilingual name, and description; Auto is greyed out while the catalog says the session's model cannot run it, and an ask its classifier escalates reaches the DSH approval dialog with the classifier's reason under the title. The choice is the plugin's own per-session record and is what the next turn runs under; the DSH sandbox mode and approval policy are moved onto the preset that mode is carried on, so approvals and the sandbox follow without the Host learning any new modes. Bypass asks for an acknowledged confirmation first, the control locks while a turn is running, and a sandbox switched natively afterwards (the `/permission` command) wins over the recorded choice, so DSH's own knobs are never contradicted. The Host's selector is hidden with a scoped CSS rule rather than replaced, since it is not a slot; a Host that renames it simply shows both. A new Claude session starts in the **Default permission mode** from this plugin's Settings, Auto unless changed: the DSH access preset is moved onto the sandbox that mode needs as the session is created, so a Host whose own default preset is full access does not turn it into Bypass.
 - **Plan review** — Under read-only access Claude works in plan mode, and the plan it hands back is read in a plugin-owned panel in a right-sidebar tab, rendered as Markdown under the prose palette chosen in this plugin's settings. The approval itself stays with DSH: its dialog names the decision and points at the panel instead of pasting the plan into a plain-text modal, and it is asked even under Full access — that setting waives actions, not the decision the plan was written to put in front of the user. Full access silences approvals outright (`approval/policy: never`, answered before any surface is shown), so the ask is un-silenced for as long as the plan is open and the session's own policy is put back afterwards. Approving and rejecting are the only answers the dialog has, and neither is "change this", so the panel adds the third: select a passage, write what should change, and send the plan back — the notes reach Claude as the reason it was refused, and the dialog closes itself. A session that proposes more than once keeps every plan: the panel heading becomes a picker listing each with its own decision, and a fresh proposal awaiting approval takes the panel back. The Session header carries a plan toggle, dotted while a plan is still waiting on its decision, and the turn's tool card carries the same plan.
@@ -84,14 +84,15 @@ Cleanup removes only installer-written content and refuses to delete user-modifi
 - **Message queue and steering** — Accepts further messages while a turn is running, and lets a queued message be edited, removed, or steered into the turn already in flight. Steering reaches the turn the way Claude Code's own does: the message is pushed into the CLI's input stream and read at its next model step, so the turn keeps running with everything it already holds instead of waiting for the end and arriving as a follow-up. The transcript draws it where it arrived, between the work before it and the work after it — DSH's own surface takes one node per turn for this preset, so a message recorded there would sit above everything the turn did and read as the question the whole answer was for. A message with attachments travels the same path an ordinary send takes, and one that arrives with no turn left to steer stays queued for the next one. Plain Enter while a turn runs queues a follow-up unless the Host's busy-Enter setting is set to steer; the queue strip's own steer action always steers. Another plugin can reach the same entry point through the `claudeSteering` service.
 - **Rewind** — Drops a message and everything after it: Claude resumes from the kept turn's transcript anchor and genuinely forgets the discarded turns, the discarded rows are hidden from the append-only DSH log, and the original text returns to the composer for editing and resending. Every turn is admitted against a captured working tree, so the same rewind optionally puts the checkout back to where the discarded turns found it — files created since are removed, changed files are restored, and files `.gitignore` covers are left alone.
 - **Ask about a selection** — Answers a question about any selected text through a read-only side query limited to `Read`, `Grep`, and `Glob`, reusing the session's model and thinking mode, with the answer copyable or sendable into the main conversation.
-- **Redacted activity timeline** — Displays thinking summaries, tool calls and results, permission events, questions, status changes, usage, errors, and subagent activity without persisting credentials.
+- **Redacted activity timeline** — Displays thinking summaries (bounded at 4,000 characters, with the cut marked), tool calls and results, permission events, questions, status changes, usage, errors, and subagent activity without persisting credentials. A configured hook is drawn as one row per invocation, folded from its start to its response so a hook that holds or bends the turn is distinguishable from a slow model; a hook that fails keeps its exit code and its output.
+- **Todo lists** — A `TodoWrite` call is drawn as the checklist it is — completed entries struck through, the entry in progress marked — with the collapsed row saying how far through the list the turn is, instead of printing the list as a line of JSON.
 - **Selectable AI output renderer** — Draws Claude's output either with this plugin's own transcript (interleaved prose, grouped tool cards, activity rows) or with DSH's native conversation renderer, where prose arrives as ordinary assistant text blocks, thinking as reasoning blocks, and root Claude tools as native tool cards (terminal, diff, search, read). Chosen in Settings and applied from the next turn; the plugin transcript remains the default, and turns already recorded keep the renderer that drew them.
 - **Automatic session titles and branch names** — Uses separate one-turn Haiku queries to summarize the first message or worktree intent. Both load `user`, `project`, and `local` settings like the main conversation, including settings-based authentication and behavior configuration. An error result keeps DSH's fallback title or the generated timestamped branch name. These queries do not borrow the main conversation process.
 - **Background task tracking** — Claude subagents and background commands appear in DSH's own session-header job list with live output, progress, and a stop button.
 - **Agent Team** — Claude Code's implicit team (named agents, the shared task list, and mail between members) gets a session-header roster and a per-teammate conversation tab, mirroring DSH's own Agent Team UI.
 - **Context usage** — Collects aggregate context-window usage from Claude Code and shows it on the session board. It does not register a separate context-meter slot beside the model selector.
 - **Turn accounting** — Closes each turn the plugin transcript drew with the footer DSH gives only its own messages: tokens, cache hit rate, wall time, time to first token, and cumulative cost. The timings are measured as the turn runs, because activity records carry no clock of their own.
-- **Managed process lifecycle** — Keeps one live Claude process per active session, serializes turns, evicts idle processes, queues user turns FIFO when every process slot is busy, converges safely after the limit is lowered, and handles Stop, cancellation, restart, and process-tree cleanup.
+- **Managed process lifecycle** — Keeps one live Claude process per active session, serializes turns, evicts idle processes, queues user turns FIFO when every process slot is busy, converges safely after the limit is lowered, and handles Stop, cancellation, restart, and process-tree cleanup. A cancelled turn keeps its process whenever Claude Code confirms it stopped, so the next prompt continues in that same process instead of respawning and resuming from disk.
 - **Bilingual interface** — Ships every user-facing string in both English and Chinese.
 
 ### 3.2 Repository, worktrees, and pull requests
@@ -102,10 +103,10 @@ Cleanup removes only installer-written content and refuses to delete user-modifi
 - **Repository and pull request status** — Shows the current repository, branch, worktree state, changed-line counts, unpushed commits, GitHub pull request, checks, review state, merge state, and blocking Claude rate limits near the composer.
 - **Session board** — Summarizes every Claude session in one place with its run state, branch, pull request, context usage, auto-fix state, and whether it is waiting on an approval or an answer.
 - **Session alerts** — Raises a desktop notification when a session the user is not looking at starts waiting on an approval or an answer, or finishes its turn; clicking it brings that session up. The session on screen never raises one, a prompt is announced once, and the whole thing is switched off from Settings.
-- **Branch diff viewer** — Provides a branch diff in a right-sidebar tab, with Host-managed fullscreen with file statistics, expand-all and collapse-all, on-demand unmodified context, and comment-to-comment navigation.
+- **Branch diff viewer** — Provides an expandable or maximized branch diff with file statistics, expand-all and collapse-all, on-demand unmodified context, and comment-to-comment navigation.
 - **Line-level review comments** — Records the user's own line or range comments against the diff and attaches them to the next Claude message.
 - **GitHub review threads** — Reads, replies to, resolves, and unresolves pull request review threads inline, with `@` completion for repository members, bot authors marked as such, and a link back to the thread on GitHub.
-- **Commit, push, merge, and pull request actions** — Supports Commit, Commit & Push, Push, draft pull request creation, and merging a pull request as a merge commit, squash, or rebase, with repository snapshot validation and Claude-written text. The commit message is written from the diff it commits: a subject line, and when the diff carries more than one independent change, a bullet per change under it; the repository's recent subjects are shown for style only, and a diff too long to send is marked as cut short rather than passed off as whole. The pull request is described from the branch rather than the tree: its commits and diff against the base branch (the one named in the dialog, else origin's default), plus whatever the commit before it adds, produce their own title and a Summary and Changes body with one bullet per independent change, so a pull request opened from already committed work is no longer described from an empty diff.
+- **Commit, push, merge, and pull request actions** — Supports Commit, Commit & Push, Push, draft pull request creation, and merging a pull request as a merge commit, squash, or rebase, with repository snapshot validation and optional Claude-generated commit messages.
 - **Branch updates** — Updates the current branch from its base by rebase (pushed with `--force-with-lease`) or merge, and hands any resulting conflicts to Claude to resolve.
 - **Pull request feedback handoff** — Expands failing check details and GitHub pull request comments and hands either of them to Claude as a fix request.
 - **Auto fix** — Watches an open pull request for new review comments and failing checks, hands each new batch to Claude to fix, commit, and push, and keeps going until everything passes or the watcher is switched off.
@@ -202,10 +203,3 @@ The type is declared through the label and the `Type:` line rather than a title 
 - A failing or unrun `pnpm check`.
 - Anything that logs, persists, or renders credentials, including in tests and fixtures.
 - Version bumps, release script edits, or publish attempts from a contribution branch.
-
-## 5. Documentation
-
-- [Installation and removal](INSTALL.md): profile selection, safe source builds, Doctor, and smoke checks.
-- [Current architecture](docs/aegis/spec/2026-08-15-dsh-claude-spec.md): behavior and ownership boundaries, maintained despite the original filename.
-- [Desktop upgrades](docs/upgrading-dsh-desktop.md): installed-Host audit and verification procedure.
-- [Documentation index](docs/aegis/INDEX.md): distinguishes current guidance from historical plans and evidence.

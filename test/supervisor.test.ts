@@ -32,10 +32,13 @@ import {
 } from '../src/supervisor.ts'
 
 class FakeQuery extends AsyncQueue<SDKMessage> {
-  readonly interrupt = vi.fn(async () => undefined)
-  readonly backgroundTasks = vi.fn(async (_toolUseId?: string) => true)
+  /** What Claude Code 2.1.x answers: a receipt that lists nothing still queued,
+   *  which is the CLI saying it stopped processing the submitted prompt. */
+  readonly interrupt = vi.fn(async () => ({ still_queued: [] as string[] }))
   readonly setModel = vi.fn(async () => undefined)
   readonly applyFlagSettings = vi.fn(async (_settings: unknown) => undefined)
+  readonly stopTask = vi.fn(async (_taskId: string) => undefined)
+  readonly backgroundTasks = vi.fn(async (_toolUseId?: string) => true)
   readonly setPermissionMode = vi.fn(async () => undefined)
   readonly initializationResult = vi.fn(async () => ({
     commands: [],
@@ -135,6 +138,7 @@ function supervisor(
   idleTimeoutMs = 60_000,
   suppliedSidecar?: ClaudeSidecarRepository,
   renderMode: ClaudeRenderMode = 'plugin',
+  attachments?: import('../src/adapter.ts').ClaudeAttachmentReader,
   warnings?: string[],
 ) {
   const root = join(tmpdir(), `dsh-claude-supervisor-${randomUUID()}`)
@@ -154,6 +158,7 @@ function supervisor(
     config,
     queryFactory: create,
     sidecar,
+    ...(attachments === undefined ? {} : { attachments }),
     ...(warnings === undefined ? {} : { logger: { warn: (message: string) => { warnings.push(message) } } }),
   })
   sidecars.set(runtime, sidecar)
@@ -211,12 +216,46 @@ const delta = (text: string) => ({
   event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
 }) as SDKMessage
 
-const result = (text = 'hello', sessionId = 'claude-session-1') => ({
+/** One request's own usage, as the CLI reports it on the partial stream. */
+const requestUsage = (inputTokens: number, cacheReadTokens: number, outputTokens: number) => ({
+  type: 'stream_event',
+  parent_tool_use_id: null,
+  event: {
+    type: 'message_delta',
+    delta: { stop_reason: 'tool_use' },
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens, cache_read_input_tokens: cacheReadTokens },
+  },
+}) as SDKMessage
+
+/** The placeholder usage the CLI forwards on an assistant message: no counts. */
+const placeholderUsage = () => ({
+  type: 'assistant',
+  parent_tool_use_id: null,
+  message: {
+    role: 'assistant',
+    content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } }],
+    usage: { input_tokens: 0, output_tokens: 0 },
+  },
+}) as SDKMessage
+
+/** One live thinking-token estimate, as the CLI streams it while it thinks. */
+const progress = (estimatedTokens: number) => ({
+  type: 'system',
+  subtype: 'thinking_tokens',
+  estimated_tokens: estimatedTokens,
+  estimated_tokens_delta: 2,
+  uuid: randomUUID(),
+  session_id: 'claude-session-1',
+}) as SDKMessage
+
+const result = (text = 'hello', sessionId = 'claude-session-1', facts: { apiMs?: number; modelCalls?: number } = {}) => ({
   type: 'result',
   subtype: 'success',
   session_id: sessionId,
   result: text,
   total_cost_usd: 0.01,
+  ...(facts.apiMs === undefined ? {} : { duration_api_ms: facts.apiMs }),
+  ...(facts.modelCalls === undefined ? {} : { num_turns: facts.modelCalls }),
   usage: { input_tokens: 4, output_tokens: 2 },
 }) as SDKMessage
 
@@ -227,6 +266,17 @@ const toolCallMessage = {
     content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls -la' } }],
   },
 } as SDKMessage
+
+/** One tool heartbeat: which tool is running, and for how long. */
+const toolProgress = (seconds: number) => ({
+  type: 'tool_progress',
+  tool_use_id: 'tool-1',
+  tool_name: 'Bash',
+  parent_tool_use_id: null,
+  elapsed_time_seconds: seconds,
+  uuid: randomUUID(),
+  session_id: 'claude-session-1',
+}) as SDKMessage
 
 const toolResultMessage = {
   type: 'user',
@@ -721,7 +771,34 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it('falls back to the turn total when no call reported its own usage', async () => {
+  it('records the turn\'s model calls and its own share of the API clock', async () => {
+    // One DSH step spans a whole Claude turn, so the session's statistics have
+    // to be summed from what the results did: `num_turns` is that result's own
+    // model calls, while `duration_api_ms` is cumulative per process — the
+    // second turn's reading covers the first turn's time as well, and only the
+    // difference belongs to it.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const turn = async (text: string, apiMs: number, modelCalls: number) => {
+      const output = await runtime.runTurn({ agent: owner.agent, prompt: text })
+      const query = transport.queries.at(-1)!
+      query.push(init())
+      query.push(result(text, 'claude-session-1', { apiMs, modelCalls }))
+      await collect(output)
+    }
+    await turn('first', 8_000, 4)
+    await turn('second', 15_000, 1)
+
+    const rows = (await projection(runtime)).activities.filter(activity => activity.kind === 'usage')
+    expect(rows.map(row => row.usage?.apiMs)).toEqual([8_000, 7_000])
+    expect(rows.map(row => row.usage?.modelCalls)).toEqual([4, 1])
+    await runtime.dispose()
+  })
+
+  it('falls back to the result\'s own usage when no call reported a sample', async () => {
+    // A turn with no `message_delta` sample has nothing better to offer than
+    // the result's own accounting, which is what the Host is told.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -850,6 +927,71 @@ describe('Claude supervisor', () => {
           usage: { totalTokens: 120, toolUses: 2, durationMs: 3_000 },
         }] },
       })
+    })
+    await runtime.dispose()
+  })
+
+  it('stops a running task on the live process, and refuses one that already settled', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    expect(runtime.tasks('dsh-session-1')).toEqual([])
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('unavailable')
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'task-1',
+      description: 'Watch logs',
+      task_type: 'local_bash',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push(result('started in the background'))
+    await collect(output)
+    await vi.waitFor(() => { expect(runtime.tasks('dsh-session-1')).toHaveLength(1) })
+
+    await expect(runtime.stopTask('dsh-session-1', 'task-9')).resolves.toBe('unavailable')
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('stopped')
+    expect(query.stopTask).toHaveBeenCalledWith('task-1')
+    // The board is settled here rather than waiting for a notification the CLI
+    // may never send, so the panel the user is looking at stops pulsing.
+    await vi.waitFor(async () => {
+      await expect(projection(runtime)).resolves.toMatchObject({
+        tasks: { tasks: [{ taskId: 'task-1', status: 'stopped' }] },
+      })
+    })
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('unavailable')
+    expect(query.stopTask).toHaveBeenCalledTimes(1)
+    await runtime.dispose()
+  })
+
+  it('leaves the board running when the CLI cannot reach the task', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const query = transport.queries[0]!
+    query.stopTask.mockRejectedValueOnce(new Error('no such task'))
+    query.push(init())
+    query.push({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'task-1',
+      description: 'Watch logs',
+      task_type: 'local_bash',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push(result('started in the background'))
+    await collect(output)
+    await vi.waitFor(() => { expect(runtime.tasks('dsh-session-1')).toHaveLength(1) })
+
+    await expect(runtime.stopTask('dsh-session-1', 'task-1')).resolves.toBe('unavailable')
+    expect(runtime.tasks('dsh-session-1')[0]?.status).toBe('running')
+    // The refusal reached the client, so the board is what it already was.
+    await expect(projection(runtime)).resolves.toMatchObject({
+      tasks: { tasks: [{ taskId: 'task-1', status: 'running' }] },
     })
     await runtime.dispose()
   })
@@ -998,11 +1140,14 @@ describe('Claude supervisor', () => {
       usage: { input_tokens: 6, output_tokens: 3 },
     } as SDKMessage)
     const secondEvents = await collect(second)
-    // The SDK total_cost_usd is the running total; we must report 0.03, not 0.01 + 0.03.
+    // The SDK total_cost_usd is the running total; the record must read 0.03,
+    // not 0.01 + 0.03.
     expect(secondEvents).toContainEqual({
       type: 'usage',
       usage: { inputTokens: 6, outputTokens: 3, cumulativeCostUsd: 0.03 },
     })
+    const rows = (await projection(runtime)).activities.filter(activity => activity.kind === 'usage')
+    expect(rows.map(row => row.usage?.cumulativeCostUsd)).toEqual([0.01, 0.03])
     await runtime.dispose()
   })
 
@@ -1743,7 +1888,7 @@ describe('Claude supervisor', () => {
     const transport = factory()
     const owner = fakeAgent()
     const warnings: string[] = []
-    const runtime = supervisor(transport.create, 4, 60_000, undefined, 'plugin', warnings)
+    const runtime = supervisor(transport.create, 4, 60_000, undefined, 'plugin', undefined, warnings)
     const output = await runtime.runTurn({ agent: owner.agent, prompt: 'edit something' })
     const query = transport.queries[0]!
     query.push(init())
@@ -1997,7 +2142,10 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it('tears down the submitted turn when DSH aborts', async () => {
+  it('keeps the process for the next turn after a clean interrupt', async () => {
+    // The receipt confirmed the submitted prompt is gone, so the process is idle
+    // and still holds the session: the next turn reuses it instead of respawning
+    // Claude and resuming the session from disk.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -2007,7 +2155,14 @@ describe('Claude supervisor', () => {
     controller.abort()
     await expect(collect(output)).rejects.toMatchObject({ name: 'AbortError' })
     expect(query.interrupt).toHaveBeenCalledOnce()
-    await vi.waitFor(() => expect(runtime.snapshots()).toHaveLength(0))
+    await vi.waitFor(() => expect(runtime.snapshots().map(item => item.state)).toEqual(['idle']))
+    const next = await runtime.runTurn({ agent: owner.agent, prompt: 'second question' })
+    query.push(init())
+    query.push(delta('second answer'))
+    query.push(result('second answer'))
+    await expect(collect(next)).resolves.toBeDefined()
+    expect(transport.queries).toHaveLength(1)
+    expect((await projection(runtime)).activities.some(activity => activity.kind === 'text')).toBe(true)
     await runtime.dispose()
   })
 
@@ -2024,7 +2179,7 @@ describe('Claude supervisor', () => {
     query.push(init())
     const input = query.input[Symbol.asyncIterator]()
     const opened = await input.next()
-    expect(runtime.deliverSteering('dsh-session-1', 'change of plan')).toBe('delivered')
+    await expect(runtime.deliverSteering('dsh-session-1', 'change of plan')).resolves.toBe('delivered')
     const steered = await input.next()
     expect(steered.value?.message.content).toBe('change of plan')
     expect(steered.value?.uuid).not.toBe(opened.value?.uuid)
@@ -2042,10 +2197,70 @@ describe('Claude supervisor', () => {
       tail.push(next.value)
     }
     expect(tail.some(event => event.type === 'complete')).toBe(true)
-    // Drawn where it arrived: the turn's prose settles as one node at the end,
-    // so a row is the only place the reader's words land in their own position.
-    const rows = (await projection(runtime)).activities.filter(activity => activity.kind === 'steering')
-    expect(rows.map(row => row.summary)).toEqual(['change of plan'])
+    await runtime.dispose()
+  })
+
+  it('steers files and images through the same resolution an ordinary send uses', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const attachments = {
+      imageLimits: {
+        mediaTypes: ['image/png'] as const,
+        maxImageBytes: 5_000_000,
+        maxImagePixels: 4_000_000,
+        maxImagesPerMessage: 4,
+        maxMessageImageBytes: 8_000_000,
+      },
+      fileHostPath: (ref: { name: string }) => `/host/${ref.name}`,
+      readImage: async () => ({
+        ref: { id: 'img-1', name: 'shot.png', mediaType: 'image/png' as const, bytes: 3, width: 2, height: 2 },
+        data: new Uint8Array([1, 2, 3]),
+      }),
+    }
+    const runtime = supervisor(transport.create, 4, 60_000, undefined, 'plugin', attachments as never)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const input = query.input[Symbol.asyncIterator]()
+    await input.next()
+    await expect(runtime.deliverSteering('dsh-session-1', [
+      { type: 'text', text: 'here is the crash' },
+      { type: 'file', attachment: { id: 'f1', name: 'log.txt', mediaType: 'text/plain', bytes: 10 } },
+      { type: 'image', attachment: { id: 'img-1', name: 'shot.png', mediaType: 'image/png', bytes: 3, width: 2, height: 2 } },
+    ] as never)).resolves.toBe('delivered')
+    const steered = await input.next()
+    const content = steered.value?.message.content
+    expect(Array.isArray(content)).toBe(true)
+    // The file travels as the path Claude can read, ahead of the user's words,
+    // and the image as the base64 block the API takes.
+    expect(content).toEqual([
+      { type: 'text', text: 'The user attached these files to this message:\n- log.txt — read it from /host/log.txt' },
+      { type: 'text', text: 'here is the crash' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AQID' } },
+    ])
+    query.push(result('done'))
+    await collect(output)
+    await runtime.dispose()
+  })
+
+  it('keeps a steered message with attachments when nothing can resolve them', async () => {
+    // Without an attachment reader the message is refused, which is the caller's
+    // signal to keep it: the next turn resolves it with the full turn path, so
+    // nothing about the message is lost either way.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const input = query.input[Symbol.asyncIterator]()
+    await input.next()
+    await expect(runtime.deliverSteering('dsh-session-1', [
+      { type: 'image', attachment: { id: 'img-1', name: 'shot.png', mediaType: 'image/png', bytes: 3, width: 2, height: 2 } },
+    ] as never)).resolves.toBe('unavailable')
+    // A refused steer owns no prompt uuid, so the turn's own result still ends it.
+    query.push(result('done'))
+    await collect(output)
     await runtime.dispose()
   })
 
@@ -2053,21 +2268,292 @@ describe('Claude supervisor', () => {
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
-    expect(runtime.canSteer('dsh-session-1')).toBe(false)
-    expect(runtime.deliverSteering('dsh-session-1', 'anyone there')).toBe('unavailable')
+    await expect(runtime.deliverSteering('dsh-session-1', 'anyone there')).resolves.toBe('unavailable')
     const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
     const query = transport.queries[0]!
     query.push(init())
-    expect(runtime.canSteer('dsh-session-1')).toBe(true)
     for (let index = 0; index < 15; index += 1) {
-      expect(runtime.deliverSteering('dsh-session-1', `steer ${index}`)).toBe('delivered')
+      await expect(runtime.deliverSteering('dsh-session-1', `steer ${index}`)).resolves.toBe('delivered')
     }
     // The ownership set is bounded: past the cap the caller keeps its message.
-    expect(runtime.canSteer('dsh-session-1')).toBe(false)
-    expect(runtime.deliverSteering('dsh-session-1', 'one too many')).toBe('unavailable')
+    await expect(runtime.deliverSteering('dsh-session-1', 'one too many')).resolves.toBe('unavailable')
     query.push(result('done'))
     await collect(output)
-    expect(runtime.deliverSteering('dsh-session-1', 'turn is over')).toBe('unavailable')
+    await expect(runtime.deliverSteering('dsh-session-1', 'turn is over')).resolves.toBe('unavailable')
+    await runtime.dispose()
+  })
+
+  it('records an unknown message type once per session, not once per frame', async () => {
+    // A type this package does not handle arrives in batches of identical frames
+    // (mirror errors did, five per turn). One row is evidence; the rest are
+    // noise the transcript never draws.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({ type: 'mirror_error', state: 'lost' } as SDKMessage)
+    query.push({ type: 'mirror_error', state: 'lost' } as SDKMessage)
+    query.push({ type: 'future_message', value: 1 } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const notices = (await projection(runtime)).activities
+      .filter(activity => String(activity.title).startsWith('Unknown Claude SDK message:'))
+    expect(notices.map(activity => activity.title)).toEqual([
+      'Unknown Claude SDK message: mirror_error',
+      'Unknown Claude SDK message: future_message',
+    ])
+    await runtime.dispose()
+  })
+
+  it('answers for a message pushed into a running turn, and stays quiet for the turn itself', async () => {
+    // The CLI books every prompt it accepts (queued → started → completed) under
+    // the uuid the host stamped on it. The prompt that opened the turn IS the
+    // turn, whose progress the transcript already draws; a message pushed in
+    // mid-turn has no other evidence anywhere, and this is the one thing that
+    // tells its sender Claude heard it.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    // Nothing drains the input stream in a test, so the prompts the host wrote
+    // are still buffered in order.
+    const reader = query.input[Symbol.asyncIterator]()
+    const opening = (await reader.next()).value!
+    await expect(runtime.deliverSteering('dsh-session-1', 'actually, stop after this')).resolves.toBe('delivered')
+    const steered = (await reader.next()).value!
+    query.push({ type: 'command_lifecycle', command_uuid: opening.uuid, state: 'queued' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'queued' } as SDKMessage)
+    // An internal command the CLI books the same way is not the reader's message.
+    query.push({ type: 'command_lifecycle', command_uuid: 'internal-task-notification', state: 'queued' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'started' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'completed' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const rows = (await projection(runtime)).activities
+      .filter(activity => activity.commandUuid !== undefined)
+      .map(activity => [activity.commandUuid, activity.title, activity.phase])
+    expect(rows).toEqual([
+      [steered.uuid, 'Claude Code queued your message', 'updated'],
+      [steered.uuid, 'Claude Code picked up your queued message', 'updated'],
+      [steered.uuid, 'Claude Code ran your queued message', 'completed'],
+    ])
+    await runtime.dispose()
+  })
+
+  it('narrates only what the reader steered, not the CLI\'s own sends', async () => {
+    // The CLI books its internal sends — the background-task report, the
+    // prompt that opened the turn — under the same frame as a steered message.
+    // A row for those would be the transcript talking to itself.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const collected = collect(output)
+    const query = transport.queries[0]!
+    const reader = query.input[Symbol.asyncIterator]()
+    const opening = (await reader.next()).value!
+    query.push(init())
+    query.push({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'task-1',
+      description: 'Deploy',
+      task_type: 'local_bash',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'task-1', task_type: 'local_bash', description: 'Deploy' }],
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    query.push(result('deploying in the background'))
+    // The turn parks waiting for the task, then asks Claude for a report under
+    // a prompt uuid of its own.
+    await vi.waitFor(() => expect(runtime.snapshots()[0]?.state).toBe('running'))
+    query.push({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'task-1',
+      status: 'completed',
+      summary: 'deployed',
+      session_id: 'claude-session-1',
+    } as SDKMessage)
+    await vi.waitFor(async () => {
+      await expect(projection(runtime)).resolves.toMatchObject({ tasks: { tasks: [{ taskId: 'task-1', status: 'completed' }] } })
+    })
+    const report = (await reader.next()).value!
+    query.push({ type: 'command_lifecycle', command_uuid: opening.uuid, state: 'completed' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: report.uuid, state: 'queued' } as SDKMessage)
+    query.push(result('report done'))
+    await collected
+    expect((await projection(runtime)).activities.filter(activity => activity.commandUuid !== undefined)).toEqual([])
+    await runtime.dispose()
+  })
+
+  it('shows a compaction while it runs, and reports one that failed', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const live: unknown[] = []
+    const unsubscribe = sidecars.get(runtime)!.subscribe(owner.agent.id as string, delta => {
+      if (delta.kind === 'live') live.push(delta.value)
+    })
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'keep going' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({ type: 'system', subtype: 'status', status: 'compacting' } as SDKMessage)
+    query.push({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 72_734, post_tokens: 1_925, duration_ms: 8_958 },
+    } as SDKMessage)
+    query.push({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'Not enough messages to compact.',
+    } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    expect(live).toEqual([{ turn: 1, state: 'compacting' }, undefined])
+    const stored = await projection(runtime)
+    // The divider the transcript draws, and the failure it must not swallow.
+    expect(stored.activities.find(activity => activity.kind === 'compaction')?.detail).toContain('72734')
+    expect(stored.activities.find(activity => activity.title === 'Claude Code could not compact the conversation')).toMatchObject({
+      kind: 'warning',
+      phase: 'completed',
+      summary: 'Not enough messages to compact.',
+    })
+    unsubscribe()
+    await runtime.dispose()
+  })
+
+  it('records a queued message the CLI dropped as a failure', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const reader = query.input[Symbol.asyncIterator]()
+    await reader.next()
+    await runtime.deliverSteering('dsh-session-1', 'never mind')
+    const steered = (await reader.next()).value!
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'queued' } as SDKMessage)
+    query.push({ type: 'command_lifecycle', command_uuid: steered.uuid, state: 'cancelled' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const dropped = (await projection(runtime)).activities
+      .filter(activity => activity.commandUuid === steered.uuid)
+      .at(-1)
+    expect(dropped).toMatchObject({
+      title: 'Claude Code dropped your queued message',
+      phase: 'failed',
+      isError: true,
+    })
+    await runtime.dispose()
+  })
+
+  it('asks the CLI for hook frames and folds one invocation onto one row', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task' })
+    const query = transport.queries[0]!
+    expect(query.options.includeHookEvents).toBe(true)
+    query.push(init())
+    query.push({ type: 'system', subtype: 'hook_started', hook_id: 'h1', hook_name: 'lint', hook_event: 'PreToolUse' } as SDKMessage)
+    query.push({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'lint', hook_event: 'PreToolUse', exit_code: 0, output: 'ok' } as SDKMessage)
+    query.push({ type: 'system', subtype: 'hook_started', hook_id: 'h2', hook_name: 'guard', hook_event: 'Stop' } as SDKMessage)
+    query.push({ type: 'system', subtype: 'hook_response', hook_id: 'h2', hook_name: 'guard', hook_event: 'Stop', exit_code: 2, output: 'refused' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const rows = (await projection(runtime)).activities
+      .filter(activity => activity.hookId !== undefined)
+      .map(activity => [activity.hookId, activity.title, activity.phase, activity.isError === true])
+    expect(rows).toEqual([
+      ['h1', 'Claude Code hook lint', 'updated', false],
+      ['h1', 'Claude Code hook lint', 'completed', false],
+      ['h2', 'Claude Code hook guard', 'updated', false],
+      ['h2', 'Claude Code hook guard', 'failed', true],
+    ])
+    await runtime.dispose()
+  })
+
+  it('tears the process down when the interrupt answers without a receipt', async () => {
+    // An older CLI resolves `undefined`, which says nothing about whether the
+    // cancelled prompt is really gone; that process is not trusted afterwards.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const controller = new AbortController()
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task', signal: controller.signal })
+    transport.queries[0]!.interrupt.mockResolvedValue(undefined)
+    controller.abort()
+    await expect(collect(output)).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(runtime.snapshots()).toHaveLength(0))
+    await runtime.dispose()
+  })
+
+  it('ignores the result that settles the turn a clean interrupt cancelled', async () => {
+    // The CLI answers every turn it started, including one DSH aborted — and that
+    // answer can land after this process has already picked up the next turn. It
+    // must not be read as a protocol violation against the live request.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const controller = new AbortController()
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'long task', signal: controller.signal })
+    const query = transport.queries[0]!
+    const iterator = query.input[Symbol.asyncIterator]()
+    const submitted = await iterator.next()
+    const cancelledUuid = submitted.value?.uuid ?? ''
+    controller.abort()
+    await expect(collect(output)).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(runtime.snapshots().map(item => item.state)).toEqual(['idle']))
+    const next = await runtime.runTurn({ agent: owner.agent, prompt: 'second question' })
+    query.push(init())
+    query.push({
+      type: 'result',
+      subtype: 'error_during_execution',
+      session_id: 'claude-session-1',
+      user_message_uuid: cancelledUuid,
+      result: '',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    } as SDKMessage)
+    query.push(delta('second answer'))
+    query.push(result('second answer'))
+    await expect(collect(next)).resolves.toBeDefined()
+    await runtime.dispose()
+  })
+
+  it('keeps thinking-token telemetry out of the activity log', async () => {
+    // The CLI streams one of these per estimated thinking-token chunk, so a
+    // single extended-thinking step can produce tens of thousands of frames.
+    // Storing them made each frame rewrite the whole sidecar while the
+    // transcript drew none of them.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'think hard' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(progress(128))
+    query.push(progress(130))
+    query.push(delta('done'))
+    query.push(result('done'))
+    await collect(output)
+    const activities = (await projection(runtime)).activities
+    expect(activities.map(activity => activity.title)).not.toContain('Claude Code thinking tokens')
+    // The turn itself is untouched: its prose still landed.
+    expect(activities.some(activity => activity.kind === 'text')).toBe(true)
     await runtime.dispose()
   })
 
@@ -2260,6 +2746,101 @@ describe('Claude supervisor', () => {
       ['tool-result', 5, 'tool-2'],
       ['text', 6, 'The cause is clear.'],
     ])
+    await runtime.dispose()
+  })
+
+  it('reports what a running turn is doing, once per change and never to disk', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const live: unknown[] = []
+    const unsubscribe = sidecars.get(runtime)!.subscribe(owner.agent.id as string, delta => {
+      if (delta.kind === 'live') live.push(delta.value)
+    })
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'look around' })
+    const query = transport.queries[0]!
+    query.push(init())
+    // Ten thinking-token estimates for one thought: the state changed once.
+    for (let index = 0; index < 10; index += 1) query.push(progress(index))
+    query.push(toolCallMessage)
+    // A tool heartbeat repeats a state that was already reported: the clock
+    // moved, the state did not, and one second had not passed.
+    query.push(toolProgress(3.5))
+    query.push(toolResultMessage)
+    query.push(delta('done'))
+    query.push(result('done'))
+    await collect(output)
+    expect(live).toEqual([
+      { turn: 1, state: 'thinking' },
+      { turn: 1, state: 'tool', label: 'Bash' },
+      { turn: 1, state: 'waiting' },
+      { turn: 1, state: 'thinking' },
+      undefined,
+    ])
+    unsubscribe()
+    // A state is not evidence: the document holds the turn's rows and no live value.
+    const stored = await projection(runtime)
+    expect(stored.activities).not.toEqual([])
+    expect(stored.activities.some(activity => activity.kind === 'status' && activity.title === 'Claude Code is thinking')).toBe(false)
+    await runtime.dispose()
+  })
+
+  it("republishes a running tool's clock at most once a second", async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const live: unknown[] = []
+    const unsubscribe = sidecars.get(runtime)!.subscribe(owner.agent.id as string, delta => {
+      if (delta.kind === 'live') live.push(delta.value)
+    })
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'look around' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(toolCallMessage)
+    await vi.waitFor(() => expect(live).toEqual([{ turn: 1, state: 'tool', label: 'Bash' }]))
+    // Inside the window the heartbeat is dropped rather than forwarded.
+    query.push(toolProgress(4))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    expect(live).toHaveLength(1)
+    // Past it, the clock is worth publishing again.
+    await new Promise(resolve => setTimeout(resolve, 1_000))
+    query.push(toolProgress(5))
+    await vi.waitFor(() => expect(live).toHaveLength(2))
+    expect(live.at(-1)).toEqual({ turn: 1, state: 'tool', label: 'Bash', elapsedMs: 5_000 })
+    query.push(result('done'))
+    await collect(output)
+    unsubscribe()
+    await runtime.dispose()
+  })
+
+  it('tells the host the newest real prompt sample, ignoring the placeholder zeros', async () => {
+    // The partial frame is the only real per-request prompt the CLI emits, and
+    // the assistant messages around it carry placeholder zeros. The newest real
+    // sample is what the host is told, so DSH divides a real size by the window
+    // instead of reading a zero.
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'look around' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push(placeholderUsage())
+    query.push(requestUsage(2_129, 14_080, 67))
+    query.push(delta('working'))
+    query.push(placeholderUsage())
+    query.push(requestUsage(179, 16_128, 66))
+    query.push({
+      ...result('done') as object,
+      usage: { input_tokens: 2_308, output_tokens: 133, cache_read_input_tokens: 30_208 },
+    } as SDKMessage)
+    const events = await collect(output)
+    expect(events.find(event => event.type === 'usage')).toEqual({
+      type: 'usage',
+      usage: { inputTokens: 179, outputTokens: 133, cacheReadTokens: 16_128 },
+    })
+    // The sidecar keeps the turn total, which is the audit and cost record.
+    const row = (await projection(runtime)).activities.find(activity => activity.kind === 'usage')
+    expect(row?.usage).toMatchObject({ inputTokens: 2_308, cacheReadTokens: 30_208, outputTokens: 133 })
     await runtime.dispose()
   })
 
