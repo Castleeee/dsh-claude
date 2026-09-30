@@ -130,11 +130,11 @@ function activityState(activity: ClaudeActivityEvent, running: boolean): 'done' 
 
 function ActivityRow({ row, t }: { row: ClaudeActivityChatData; t: Translate }) {
   const { activity, running, subcalls } = row
-  // A thought opens by itself. Its summary IS the whole thought, and the row
-  // clips that to one ellipsised line, so a collapsed thinking row shows a
-  // fragment of a sentence and reads as though the reasoning had been dropped.
-  // The reader can still close it: the toggle is unchanged, only the start.
-  const [open, setOpen] = useState(activity.kind === 'thinking')
+  // A thought stays folded. Its summary IS the whole thought, so the row shows
+  // its opening line and the reader opens it for the rest. How much of a turn
+  // is on screen is the transcript's own process group's decision, and
+  // unfolding every thought here fights that setting.
+  const [open, setOpen] = useState(false)
   const state = activityState(activity, running)
   const detail = activity.detail
   const expandable = detail !== undefined || subcalls.length > 0 || activity.kind === 'thinking' || activity.kind === 'steering'
