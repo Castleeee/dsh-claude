@@ -347,13 +347,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       [...CLAUDE_CODE_PROVIDER_IDS],
       createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request), () => probeClaudeModels(supervisorConfig.executablePath)),
     )
-    // Steering entry point. A message steered into a running Claude turn has to
-    // pass through the supervisor that owns that turn's process; whoever takes it
-    // out of the agent inbox calls this first, and `unavailable` tells them to
-    // keep the message for a later turn instead of losing it.
-    ctx.provide(CLAUDE_STEERING_SERVICE, {
-      deliver: (sessionId, content) => supervisor.deliverSteering(sessionId, content),
-    } satisfies ClaudeSteeringService)
     // The Claude preset owns a whole configuration world: while it is selected,
     // the global model and permission defaults are its own, and switching away
     // restores every other preset's untouched. Boot recovery runs before the
