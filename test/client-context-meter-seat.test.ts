@@ -132,9 +132,9 @@ describe('the Host meter in the dock row (0.2.0)', () => {
 describe('the composer rows this plugin does not touch', () => {
   it('reorders nothing: every rule only hides a Host control', () => {
     // The ring reaches its seat through the slot's own `order`
-    // (`conversation.composer.dock`, after the session statistics), so nothing
-    // here readjusts a row. The rule that used to reorder the trailing row went
-    // stale the moment the Host moved its meter out of it.
+    // (`conversation.composer.dock`, ahead of the session statistics), so
+    // nothing here readjusts a row. The rule that used to reorder the trailing
+    // row went stale the moment the Host moved its meter out of it.
     const rules = chromeRules()
     expect(rules.filter(rule => rule.body.startsWith('order:'))).toHaveLength(0)
   })
