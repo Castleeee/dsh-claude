@@ -279,3 +279,65 @@ profile 的依赖声明（`package.json`）：
 
 > ⚠️ `dshmarket` 锁定在 `1.66.5` 而不是 `^1.66.6`：官方 App 的 pnpm 有
 > `minimumReleaseAge` 供应链策略，太新的版本会被拒（`PM_MINIMUM_RELEASE_AGE_VIOLATION`）。
+
+---
+
+## 9. 已修复的启动死锁（2026-09-30）—— 改这里要当心
+
+### 症状
+
+官方 App 打不开：进程都在、host 也在 19387 监听、**但没有窗口**，
+**没有任何日志**（`~/Library/Logs/DeepSeek Harness/` 干净），
+`/plugins/dsh-claude/*` 全部 **404**（插件没挂载），而 base 路由是 401。
+
+### 根因
+
+**`agent-default-model` / `permission` 的写入发生在插件 activation 期间，会死锁。**
+
+链路：
+
+```
+src/index.ts  →  await recoverWorldAtBoot(worldSwitch, warn)      ← activation 期间
+world-switch.ts recover()  →  await settings.replace(ns, section)
+dsh-settings  write()  →  configEditor.edit()
+dsh-config-editor  edit()  →  await withFileLock(<profile>/package.json, ...)   ← 这里
+```
+
+boot 自己在挂载整棵插件树期间**一直持有 profile `package.json` 的文件锁**。
+插件在自己的 activation 里再去要这把锁 → 互相等待 → `apply()` 永不返回 →
+Host 永不发 `ready` → 窗口永不 load → 于是"进程都在但没有窗口、也不报错"。
+
+**触发条件**：`$DSH_HOME/plugins/dsh-claude/worlds.json` 存在
+（没有它时 `sectionsOf(world)` 返回 `undefined`，`recover()` 提前返回，不写 → 不死锁）。
+
+这就是为什么"同一个 profile 在隔离 `DSH_HOME` 里能起、在真实 `~/.dsh` 里起不来"：
+worlds.json 在真实 home 里。
+
+### 修复（`src/index.ts`）
+
+去掉 `await`，让恢复写入脱离 activation 路径：
+
+```ts
+// 不要写回 await！
+void recoverWorldAtBoot(worldSwitch, message => { ctx.logger.warn(message) })
+```
+
+`withFileLock` 会等锁而不是失败，所以 activation 结束后锁释放，写入随后成功 ——
+实测恢复写入确实落盘（profile 的 `cordis.patch.yml` 里出现 `permission` 条目）。
+
+### 排查这类问题的正确手法（下次照做）
+
+1. **不要用 symlink 复制 node_modules 做隔离测试** —— 会得到假失败
+   （曾误报 3 个插件 "failed to import"）。用 `cp -R` 真拷贝。
+2. **把真实 profile 拷到隔离 home 会掩盖问题**（少了 `~/.dsh` 的状态）。
+   判断"是 profile 的问题还是 home 的问题"要把可用 profile 放进真实 home 反向验证。
+3. 判据：启动日志里有没有 `dsh web: http://127.0.0.1:...?token=...`。
+   **有 = 启动完成；没有 = 卡在 activation**（端口照样监听，所以只看端口会误判）。
+4. `inactiveEntries` 报 `failed to import` 只表示 `fiber === undefined`；
+   **它不打印真正的 import 错误**，别指望从那里拿到原因。
+
+### 已知尚未修的同类风险
+
+`world-switch.ts` 的 `switchTo()` 里也有 `await this.#settings.write(...)`，
+但它只在用户切 preset 时跑（activation 早已结束），所以安全。
+**如果以后把任何 settings 写入挪进 activation 路径，就会再次死锁。**

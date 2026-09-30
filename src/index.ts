@@ -364,7 +364,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       warn: message => { ctx.logger.warn(message) },
       log: message => { ctx.logger.info(`dsh-claude: ${message}`) },
     })
-    await recoverWorldAtBoot(worldSwitch, message => { ctx.logger.warn(message) })
+    // Not awaited, deliberately. The recovery writes the profile's own settings
+    // document, and writing it takes the profile `package.json` file lock —
+    // which the boot itself still holds until the whole plugin tree has
+    // activated. Awaiting the write here deadlocks the mount: the Host never
+    // reports ready, the window never loads, and nothing is logged to say why.
+    // Issued without an await, activation finishes, the boot drops the lock, and
+    // the write lands a moment later; `withFileLock` waits for it rather than
+    // failing. Nothing before the first turn depends on the result, which is why
+    // the re-assertion is safe to move off the activation path.
+    void recoverWorldAtBoot(worldSwitch, message => { ctx.logger.warn(message) })
     ctx.effect(() => mountWorldWiring(ctx, {
       switch: worldSwitch,
       // The routes this package serves are the ones it registered its adapter
