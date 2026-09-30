@@ -33,19 +33,27 @@ describe('host chrome suppression', () => {
 
   it('stands the Host context meter down only while a Claude meter is on screen', () => {
     // The Host renders that meter from the composer rather than through a slot,
-    // so it is matched twice: by the emitted class of the build this was written
-    // against, and by the ring it draws (a 14px viewBox inside its own dialog
-    // trigger). Either match is enough to remove it.
-    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"])>[class*="JdJrwG_root"]{display:none}`)
+    // so it is matched by shape: the ring it draws (a 14px viewBox inside its own
+    // dialog trigger) and the build-hash class of the release this was written
+    // against. Either match is enough to remove it.
     expect(HOST_CHROME_CSS).toContain('svg[width="14"][height="14"]>circle[cx="7"]')
+    // Two rows, because the Host moved the meter between them: the trailing row
+    // through 2.0.9, the dock row (below the card) from 0.2.0. Missing the second
+    // leaves the Host's meter on screen next to this plugin's.
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_trailing"]:has(>[class$="_primary"])>[class*="JdJrwG_root"]{display:none}`)
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_dock"]:has(>[class*="_root"])>[class*="y0jqnG_root"]{display:none}`)
+    expect(HOST_CHROME_CSS).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] [class*="_dock"]:has(>[class*="_root"])>span:not([data-dsh-claude-context-meter]):has(button[aria-haspopup="dialog"]>svg[width="14"][height="14"]>circle[cx="7"]){display:none}`)
     // That structural match must not catch this plugin's own ring, which draws
     // the same geometry — without the `:not()` it would hide itself.
     expect(HOST_CHROME_CSS).toContain('span:not([data-dsh-claude-context-meter])')
-    // Every rule that touches the Host meter or the row it sits in must be gated
-    // on the flag, so a session this plugin does not own keeps the Host's own
-    // meter.
+    // Every rule that touches the Host meter or a row it sits in must be gated on
+    // the flag, so a session this plugin does not own keeps the Host's own meter.
+    // `_dock` is deliberately broad (the composer card has a dock too), which is
+    // exactly why the gate matters here.
     for (const rule of HOST_CHROME_CSS.split('}').map(part => part.trim()).filter(Boolean)) {
-      if (rule.includes('JdJrwG_root') || rule.includes('_trailing')) expect(rule.startsWith(`body[${CLAUDE_SESSION_ATTRIBUTE}]`)).toBe(true)
+      if (rule.includes('JdJrwG_root') || rule.includes('y0jqnG_root') || rule.includes('_trailing') || rule.includes('_dock')) {
+        expect(rule.startsWith(`body[${CLAUDE_SESSION_ATTRIBUTE}]`)).toBe(true)
+      }
     }
   })
 

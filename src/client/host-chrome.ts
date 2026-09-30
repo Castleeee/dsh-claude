@@ -58,18 +58,41 @@ const PRESET_SEAT_CSS = [
  *  any other block in the shell that happens to use the same local name. */
 const COMPOSER_TRAILING = '[class*="_trailing"]:has(>[class$="_primary"])'
 
-/** The Host's meter, in two selectors — either is enough to remove it.
+/** The composer's dock row: the strip below the card that carries
+ *  `conversation.composer.dock` and, from Host 0.2.0 on, the Host's meter.
+ *
+ *  That row is why this constant exists. Through 2.0.9 the Host's meter sat in
+ *  the trailing row, a sibling of the model seat, and `COMPOSER_TRAILING` was
+ *  enough to reach it. 0.2.0 renders it one row down instead:
+ *
+ *    <div class="..._dock">
+ *      {renderSlot('conversation.composer.dock')}
+ *      {activity ? null : <ContextMeter/>}
+ *    </div>
+ *
+ *  The plugin's own meter still registers on `conversation.input.right`, which
+ *  is inside the card, so without this the two meters coexist and only the
+ *  Host's is where the eye expects it. The `:has()` guard names the meter's own
+ *  class suffix, so a `_dock` block that carries something else is left alone. */
+const COMPOSER_DOCK = '[class*="_dock"]:has(>[class*="_root"])'
+
+/** The Host's meter, in three selectors — any one is enough to remove it.
  *
  *  The Host renders that meter from the composer itself rather than through
  *  `conversation.input.right`, so there is no slot entry to shadow and no
  *  stable class to match: only the build-hash prefix of its CSS Module moves
- *  between Host releases (`JdJrwG_root` in Host 2.0.9). The second selector
- *  names the shape instead — a 14px ring inside its own dialog trigger, which
- *  is the one thing a Composer button would have to reproduce to be caught by
- *  mistake. Should a future Host change both, this misses and the Host's own
- *  meter comes back, rather than the row losing a control. */
+ *  between Host releases (`JdJrwG_root` in Host 2.0.9, `y0jqnG_root` in the
+ *  official 0.2.0). The last selector names the shape instead — a 14px ring
+ *  inside its own dialog trigger, which is the one thing a Composer button
+ *  would have to reproduce to be caught by mistake. The hash prefixes are the
+ *  part that rots; the shape is what survives a rebuild, and it is verified
+ *  against 0.2.0's markup (`<span class="y0jqnG_root">` wrapping a
+ *  `button[aria-haspopup="dialog"]` holding a 14px `circle[cx="7"]`). Should a
+ *  future Host change both the shape and the row, this misses and the Host's
+ *  own meter comes back, rather than the row losing a control. */
 const HOST_METER_SELECTORS = [
   '[class*="JdJrwG_root"]',
+  '[class*="y0jqnG_root"]',
   'span:not([data-dsh-claude-context-meter]):has(button[aria-haspopup="dialog"]>svg[width="14"][height="14"]>circle[cx="7"])',
 ]
 
@@ -85,15 +108,20 @@ const CLAUDE_SESSION = `body[${CLAUDE_SESSION_ATTRIBUTE}]`
  *  Claude Session is none of the context Claude Code actually holds.
  *
  *  `ClaudeContextMeter` draws the same ring from the CLI's own report. Within
- *  the session mark: the Host's ring goes, and this one takes the seat it had —
- *  after the model seat, immediately before the submit buttons.
+ *  the session mark: the Host's ring goes, and this one takes the seat it had.
  *
  *  That seat needs no DOM move. The slot anchor wrapping this plugin's meter is
- *  `display:contents`, so the ring is already a flex item of the row and `order`
- *  places it where the Host's meter sat; the Host's own meter is a direct child
- *  of the same row. */
+ *  `display:contents`, so the ring is already a flex item of its row and `order`
+ *  places it where the Host's meter sat.
+ *
+ *  Both rows are swept because the Host moved the meter between them: the
+ *  trailing row through 2.0.9, the dock row from 0.2.0. The order rules stay
+ *  bound to the trailing row on purpose — that is the row this plugin's meter
+ *  registers into (`conversation.input.right`), whichever row the Host's own
+ *  has moved to. */
 const CONTEXT_METER_CSS = [
-  ...HOST_METER_SELECTORS.map(selector => `${CLAUDE_SESSION} ${COMPOSER_TRAILING}>${selector}{display:none}`),
+  ...[COMPOSER_TRAILING, COMPOSER_DOCK].flatMap(row =>
+    HOST_METER_SELECTORS.map(selector => `${CLAUDE_SESSION} ${row}>${selector}{display:none}`)),
   `${CLAUDE_SESSION} ${COMPOSER_TRAILING} [data-dsh-claude-context-meter]{order:1}`,
   `${CLAUDE_SESSION} ${COMPOSER_TRAILING}>[class$="_primary"]{order:2}`,
 ].join('')
