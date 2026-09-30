@@ -820,22 +820,33 @@ export const contextMeterRoot: CSSProperties = {
   position: 'relative',
 }
 
+/** The trigger reads as one more pill in the composer's dock row, because that
+ *  is what the Host's own meter is: a 14px ring and the percentage, inside the
+ *  same pill frame the statistics beside it use (`padding: 1px 8px`, `gap: 6px`,
+ *  the secondary font size). A fixed 28px box held the ring alone, which read as
+ *  a different kind of control next to those pills and left the number in the
+ *  `aria-label` only. */
 export const contextMeterTrigger: CSSProperties = {
-  width: 28,
-  height: 28,
-  display: 'grid',
-  placeItems: 'center',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
   flex: 'none',
-  padding: 0,
+  padding: '1px 8px',
   border: 'none',
-  borderRadius: 999,
+  borderRadius: 24,
   background: 'transparent',
-  color: 'var(--dsw-alias-label-secondary)',
+  color: 'var(--dsw-alias-label-tertiary)',
+  font: 'inherit',
+  fontSize: 'var(--dsh-content-font-size-secondary, 13px)',
+  fontVariantNumeric: 'tabular-nums',
+  lineHeight: 'calc(20px + var(--dsh-content-font-delta-secondary, 0px))',
+  whiteSpace: 'nowrap',
   cursor: 'pointer',
 }
 
 export const contextMeterTriggerOpen: CSSProperties = {
   background: 'var(--dsw-alias-interactive-bg-hover)',
+  color: 'var(--dsw-alias-label-secondary)',
 }
 
 export const contextMeterTrack: CSSProperties = {

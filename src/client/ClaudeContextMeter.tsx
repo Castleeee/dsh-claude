@@ -199,6 +199,11 @@ export function ClaudeContextMeter({ useClaudeProjection, t }: ClaudeContextMete
             style={styles.contextMeterFill}
           />
         </svg>
+        {/* The reading, beside the ring: the Host's own meter prints it there,
+            and a ring alone cannot say whether 5% and 95% are the same shape.
+            No style of its own — it inherits the trigger's colour and tabular
+            figures, which is what makes the two read as one pill. */}
+        <span>{`${percent}%`}</span>
       </button>
       {open ? <ClaudeContextPanel usage={usage} {...(compaction === undefined ? {} : { compaction })} t={t} /> : null}
       {/* `available` above is what leaves this component empty for any other

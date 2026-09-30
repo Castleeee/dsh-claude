@@ -25,10 +25,13 @@ export interface ClaudeStatsPillsProps extends ClaudeStatsPillsInjected {
  *  (`StatsPills.module.css` / `stat-dialog.module.css`), so the row reads as the
  *  same piece of chrome. */
 const PILL_CSS = [
-  '.dsh-claude-stats{max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;',
-    'padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0;',
+  // Content-width, because this row is shared: the composer's dock also carries
+  // the context ring. A `width:100%` row (what this was when it stood alone
+  // above the composer) eats the whole flex line and pushes the ring to the far
+  // edge, so the two read as unrelated ends of the row instead of one cluster.
+  '.dsh-claude-stats{box-sizing:border-box;max-width:100%;',
     'font-size:var(--dsh-content-font-size-secondary,13px);line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));',
-    'justify-content:center;gap:12px;margin:0 auto;display:flex}',
+    'align-items:center;gap:12px;display:inline-flex}',
   '.dsh-claude-stats-anchor{min-width:0;display:inline-flex;position:relative}',
   '.dsh-claude-stats-pill{box-sizing:border-box;max-width:100%;color:var(--dsw-alias-label-tertiary);font:inherit;',
     'font-variant-numeric:tabular-nums;line-height:inherit;white-space:nowrap;background:0 0;border:none;',

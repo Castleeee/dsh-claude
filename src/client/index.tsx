@@ -468,16 +468,15 @@ ${error.stack ?? ''}`
   // The composer's dock row, below the card: the Host moved its own meter there
   // in 0.2.0 (through 2.0.9 it sat in the trailing row, beside the model seat),
   // so this ring moves with it rather than sitting where the Host's no longer
-  // is. The row is a centred flex row, and `order` seats the ring ahead of the
-  // session statistics — the pill pair the Host's own row also carries at order
-  // 0 (`id: "stats"`, hidden by `host-chrome`), which would otherwise push the
-  // ring out to the end of the row. The entry renders nothing for any other
+  // is. `order` seats it after the session statistics and after the Host's own
+  // hidden `stats` entry, which both sit at 0 — the reading then ends the row,
+  // the way the Host's meter does. The entry renders nothing for any other
   // session, and the Host's meter is stood down by `host-chrome` for as long as
   // this one is on screen.
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock',
     id: 'claude-context-meter',
-    order: -1,
+    order: 10,
     locale: namespace,
     inject: (): ClaudeContextMeterInjected => ({ t }),
   }, ClaudeContextMeter))
