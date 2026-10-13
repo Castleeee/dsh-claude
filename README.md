@@ -1,5 +1,8 @@
 # dsh-claude
 
+## Attention Please
+*Recently, Anthropic unexpectedly suspended my account, so maintenance of this plugin may be paused for a while until I get a new account. I apologize for any inconvenience this may cause and appreciate your understanding. If you need to use this plugin, please do not upgrade the Deepseek Harness version for now.*
+
 ## 1. Overview
 
 `dsh-claude` runs the locally installed Claude Code CLI as a first-class conversation provider inside DeepSeek Harness (DSH). It uses Claude Code's official Agent SDK protocol instead of recreating the agent with a separate API client.
