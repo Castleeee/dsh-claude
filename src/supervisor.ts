@@ -1337,18 +1337,18 @@ export class ClaudeSupervisor {
 
   async #handleMessage(entry: SupervisorEntry, message: NormalizedSdkMessage): Promise<void> {
     if (message.kind === 'init') {
-      // Claude Code can re-emit system/init across turns in long-lived
-      // streaming-input mode (e.g. the auth-error path). Treat it idempotently:
-      // refresh the session id/version and negotiated state, and only reject a
-      // genuine identity/cwd mismatch.
+      // system/init is per-turn metadata in streaming-input mode. After the
+      // first init binds this Query, refreshes must retain that session identity,
+      // including when a rewind allowed the first init to establish a new id.
       const firstInitialization = !entry.initialized
-      if (entry.expectedResume !== undefined && message.sessionId !== entry.expectedResume) {
-        throw new ClaudeProtocolError(`Claude Code resumed unexpected session ${message.sessionId}; expected ${entry.expectedResume}`)
+      const expectedSessionId = firstInitialization ? entry.expectedResume : entry.claudeSessionId
+      if (expectedSessionId !== undefined && message.sessionId !== expectedSessionId) {
+        throw new ClaudeProtocolError(`Claude Code initialized unexpected session ${message.sessionId}; expected ${expectedSessionId}`)
       }
-      // A resumed process reports the shell cwd Claude Code restored with the
-      // session -- wherever the last Bash `cd` left it -- not its launch
-      // directory; the session id check above already proves identity.
-      if (entry.expectedResume === undefined && message.cwd !== entry.cwd) {
+      // Only the first fresh init validates the launch cwd. Later turns and
+      // ordinary resumes report Claude's current shell cwd after Bash `cd`,
+      // not the immutable DSH launch directory; their identity is checked above.
+      if (firstInitialization && entry.expectedResume === undefined && message.cwd !== entry.cwd) {
         throw new ClaudeProtocolError(`Claude Code initialized in unexpected cwd ${message.cwd}; expected ${entry.cwd}`)
       }
       entry.initialized = true

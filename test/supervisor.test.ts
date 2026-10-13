@@ -736,6 +736,118 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('keeps the launch cwd while later turns and a respawn report Claude’s changed shell cwd', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const first = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+    const query = transport.queries[0]!
+    expect(query.options).toMatchObject({ cwd: '/workspace' })
+    expect(query.options.resume).toBeUndefined()
+    query.push(init())
+    query.push(result('hello'))
+    await collect(first)
+
+    owner.events.push(
+      { type: 'turn/start', data: { turn: 2 }, seq: owner.events.length, time: 3 },
+      { type: 'step/start', data: { turn: 2, step: 1 }, seq: owner.events.length + 1, time: 4 },
+    )
+    const second = await runtime.runTurn({ agent: owner.agent, prompt: 'inspect the service' })
+    query.push(init())
+    query.push({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'cd-1', name: 'Bash', input: { command: 'cd /workspace/service && pwd' } }],
+      },
+    } as SDKMessage)
+    query.push({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'cd-1', content: '/workspace/service' }],
+      },
+    } as SDKMessage)
+    query.push(result('inspected'))
+    await collect(second)
+
+    owner.events.push(
+      { type: 'turn/start', data: { turn: 3 }, seq: owner.events.length, time: 5 },
+      { type: 'step/start', data: { turn: 3, step: 1 }, seq: owner.events.length + 1, time: 6 },
+    )
+    const third = await runtime.runTurn({ agent: owner.agent, prompt: 'continue' })
+    query.push(init('claude-session-1', '/workspace/service'))
+    query.push(result('continued'))
+    await expect(collect(third)).resolves.toContainEqual({ type: 'complete', text: 'continued' })
+    expect(transport.queries).toHaveLength(1)
+    expect(runtime.snapshots()[0]).toMatchObject({ cwd: '/workspace', claudeSessionId: 'claude-session-1', state: 'idle' })
+    expect(owner.agent.session.header.cwd).toBe('/workspace')
+    const sidecar = sidecars.get(runtime)!
+    expect((await sidecar.read(owner.agent.id as string)).binding).toMatchObject({ claudeSessionId: 'claude-session-1', cwd: '/workspace/service' })
+    await runtime.dispose()
+
+    const restarted = supervisor(transport.create, 4, 60_000, new ClaudeSidecarRepository({ root: sidecar.root }))
+    try {
+      const fourth = await restarted.runTurn({ agent: owner.agent, prompt: 'continue after restart' })
+      const resumed = transport.queries[1]!
+      expect(resumed.options).toMatchObject({ cwd: '/workspace', resume: 'claude-session-1' })
+      resumed.push(init('claude-session-1', '/workspace/service'))
+      resumed.push(result('resumed'))
+      await expect(collect(fourth)).resolves.toContainEqual({ type: 'complete', text: 'resumed' })
+      expect(restarted.snapshots()[0]).toMatchObject({ cwd: '/workspace', claudeSessionId: 'claude-session-1', state: 'idle' })
+    } finally {
+      await restarted.dispose()
+    }
+  })
+
+  it.each(['fresh', 'resumed', 'rewound'] as const)('rejects a session identity change on repeated init in a %s query', async (mode) => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const sidecar = sidecars.get(runtime)!
+    if (mode !== 'fresh') {
+      await sidecar.writeBinding(owner.agent.id as string, { claudeSessionId: 'claude-session-1', cwd: '/workspace' })
+    }
+    if (mode === 'rewound') {
+      await sidecar.writeRewind(owner.agent.id as string, {
+        ranges: [], anchors: [], snapshots: [], pending: { resumeAt: 'kept-chain-uuid' },
+      })
+    }
+    try {
+      const first = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+      const query = transport.queries[0]!
+      const acceptedId = mode === 'rewound' ? 'claude-rewound-session' : 'claude-session-1'
+      query.push(init(acceptedId))
+      query.push(result('hello', acceptedId))
+      await collect(first)
+      if (mode === 'rewound') expect((await projection(runtime)).rewind?.pending).toBeUndefined()
+
+      const second = await runtime.runTurn({ agent: owner.agent, prompt: 'continue' })
+      query.push(init('unrelated-session'))
+      // Even a result matching the unexpected init must not authorize re-binding.
+      query.push(result('wrong conversation', 'unrelated-session'))
+      await expect(collect(second)).rejects.toThrow(/unexpected session/u)
+      expect((await projection(runtime)).binding?.claudeSessionId).toBe(acceptedId)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('rejects an unexpected session id on the first resumed init even with the launch cwd', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    await sidecars.get(runtime)!.writeBinding(owner.agent.id as string, { claudeSessionId: 'persisted-session', cwd: '/workspace' })
+    try {
+      const output = await runtime.runTurn({ agent: owner.agent, prompt: 'continue' })
+      transport.queries[0]!.push(init('unrelated-session'))
+      await expect(collect(output)).rejects.toThrow(/unexpected session/u)
+      expect((await projection(runtime)).binding?.claudeSessionId).toBe('persisted-session')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('preserves running tasks when the long-lived query re-emits system/init', async () => {
     const transport = factory()
     const owner = fakeAgent()
