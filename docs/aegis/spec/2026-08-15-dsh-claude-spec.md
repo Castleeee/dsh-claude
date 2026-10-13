@@ -149,6 +149,17 @@ Responsibilities:
 - restart with `resume` after normal eviction or host restart
 - never automatically replay an in-flight prompt after an ambiguous crash
 
+The Query launch cwd remains the immutable DSH session cwd. Claude Code's
+`system/init` is per-turn metadata, not just a process-start handshake: its cwd
+can change after a foreground Bash `cd`, including when the session is resumed.
+The supervisor checks the cwd on the first fresh initialization and checks an
+ordinary resume against the persisted Claude session id. Every subsequent init
+must keep the session id accepted by that Query's first init; a rewind's initial
+re-binding exception does not permit later identity changes. Reported CLI cwd
+stays binding metadata, never a replacement launch cwd or permission root. See
+[the SDK session reference](https://code.claude.com/docs/en/agent-sdk/sessions)
+and the pinned SDK's `SDKSystemMessage` documentation.
+
 A crash before the request is accepted may fail normally. A crash after any Claude activity or permission/tool evidence marks the run `outcome-unknown` and requires a new human prompt.
 
 ### 3.3 Prompt mapping
