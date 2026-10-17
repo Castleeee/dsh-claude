@@ -1,6 +1,9 @@
 # Installation and removal runbook
 
-Current guidance: 2026-09-14, plugin 0.1.51, development graph DSH 0.1.5-rc.2.
+Current guidance: 2026-10-17, fork plugin `0.1.64-fork.12`, Host 0.2.0 line.
+Branch: `port/upstream-tracked` on `Castleeee/dsh-claude` (fork of
+`Norman-else/dsh-claude`). This plugin is installed from a **built tarball**;
+there is no supported `link:` install — see §3.
 
 ## 1. Identify the running installation
 
@@ -12,46 +15,61 @@ to compensate for a command aimed at the wrong one. No port is assumed here.
 Examples below use `desktop`; substitute the actual profile throughout.
 If `dsh` is not on PATH, use that installation's CLI entry point instead.
 
-## 2. Install from npm
+## 2. Install the built tarball
 
 ```sh
-dsh plugin --profile desktop add @norman-else/dsh-claude
+dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.12.tgz
 ```
 
 Wait for the profile operation to finish, then quit Desktop completely and
 reopen it. Select **Claude** in a new session. The package's bundle patch
-declares the preset (Desktop 2.0.15 / Host 0.1.7 or later); its route uses the
-active profile package source.
+declares the preset; its route uses the active profile package source.
 
-## 3. Install from a source checkout
+The tarball must be a real file path, not `link:`. Confirm afterwards that the
+install did not drag the fork's devDependencies into the profile — this must
+print `0`:
+
+```sh
+ls ~/.dsh/profiles/desktop/node_modules | grep -c deepseek
+```
+
+Then confirm the installed version:
+
+```sh
+node -p "require(require('os').homedir()+'/.dsh/profiles/desktop/node_modules/@norman-else/dsh-claude/package.json').version"
+```
+
+## 3. Build the tarball from a source checkout
 
 Requires Node.js 20 or later and pnpm. From the checkout:
 
 ```sh
+git clone -b port/upstream-tracked https://github.com/Castleeee/dsh-claude.git
+cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check
+pnpm pack --pack-destination .
 ```
 
 On macOS, prepend `/opt/homebrew/bin` to PATH if that is where pnpm is installed.
 PowerShell does not use the POSIX `PATH=... command` syntax.
 
-If this checkout is already linked to a running profile, finish active turns
-before rebuilding it. A build can trigger a live client reload and interrupt
-projection subscriptions. During active work, validate in a separate source
-copy with its own dependencies; do not copy its build into the live checkout.
-After a deliberate live rebuild, fully restart Desktop to verify activation.
+`pnpm check` runs typecheck, tests and the build, so `lib/` exists before
+packing; `prepack` rebuilds it inside `pnpm pack` regardless. The result is
+`norman-else-dsh-claude-<version>.tgz` in the checkout — install it with §2.
 
-Link from PowerShell:
+**Do not `link:` the checkout.** The fork's `devDependencies` carry the
+`0.1.7-rc.2` `@deepseek-ai/*` packages, kept only for local typecheck; a link
+makes Node resolve those ahead of the Host's own 0.2.0 line, the Host then
+judges all public plugins incompatible, and Desktop starts with no window and no
+log. `pnpm pack` is what keeps `devDependencies` out. Details:
+`UPSTREAM-MERGE-NOTES.md` §6.1.
 
-```powershell
-dsh plugin --profile desktop add "link:$($PWD.Path.Replace('\', '/'))"
-```
-
-Or from a POSIX shell:
-
-```sh
-dsh plugin --profile desktop add "link:$(pwd)"
-```
+If a build is deliberately run beside a live profile, finish active turns first:
+a build can trigger a live client reload and interrupt projection subscriptions.
+During active work, validate in a separate source copy with its own dependencies;
+do not copy its build into the live checkout. After a deliberate live rebuild,
+fully restart Desktop to verify activation.
 
 ## 4. Check the local Claude CLI
 
