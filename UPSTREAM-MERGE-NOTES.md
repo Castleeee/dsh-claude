@@ -7,7 +7,10 @@
 
 - `origin` = `Castleeee/dsh-claude`（你的 fork）
 - `upstream` = `Norman-else/dsh-claude`
-- 工作分支：`port/upstream-tracked`（同时也是 fork 的默认分支 `master`）
+- 分支模型（两条线，别再混）：
+  - **`master`** = **稳定线**，也是默认分支。**只有 master 的 push / merge 触发构建与发布**，
+    别人装的就是它切出来的 release。
+  - **`feature/latest`** = **不稳定线**。新改动先落这里；验证好了再并进 master 才发布。
 
 ---
 
@@ -16,7 +19,7 @@
 ```sh
 cd /Users/jack/code/dsh-plugins/dsh-claude
 git fetch upstream
-git checkout port/upstream-tracked
+git checkout feature/latest
 git merge upstream/master
 
 # 冲突处理：自己功能涉及的 → 保留 ours；其余 → 取 theirs（第 3 节有速查表）
@@ -24,17 +27,25 @@ git merge upstream/master
 pnpm install --frozen-lockfile
 pnpm check                                   # typecheck + test + build
 
-# 打包安装（不要用 link:，原因见第 4 节）
-pnpm pack --pack-destination ~/.dsh/artifacts
-dsh plugin --profile desktop add ~/.dsh/artifacts/norman-else-dsh-claude-<version>.tgz
-# 然后完全退出并重启 DeepSeek Harness
+# 验证通过后才进稳定线 —— master 的 push 会触发构建并重切 release
+git checkout master
+git merge --ff-only feature/latest
+git push origin master
 ```
 
-`git merge-base port/upstream-tracked upstream/master` 应当等于上游的某个 tip：
+`git merge-base feature/latest upstream/master` 应当等于上游的某个 tip：
 基点干净，git 只会对**两边都改过**的行报冲突。
 
-版本号用 `0.1.64-fork.N` 这样的自有序列，不要跟上游的 `0.1.6x` 混淆。**纯文档改动不 bump 版本**，
-这样仓库 HEAD 始终与已验证的 tgz 名称一一对应。
+版本号用 `0.1.64-fork.N` 这样的自有序列，不要跟上游的 `0.1.6x` 混淆。
+
+**发布是自动的**：`master` 的每次 push / merge 都会跑 `.github/workflows/release.yml`
+（`pnpm check` → `pnpm pack` → 重切 `v<version>` 滚动 tag），所以给别人的那一条 URL
+
+```
+https://github.com/Castleeee/dsh-claude/releases/download/v<version>/norman-else-dsh-claude-<version>.tgz
+```
+
+**只在你 bump 版本号时才变**。纯文档改动不要 bump：同一个 tag 会被重切，URL 不变。
 
 **上游已有等价或更好实现的，一律取上游、不要重做**：URL-userinfo 脱敏边界、进度遥测离开
 durable 路径、未知消息只报一次、prompt size 取 `message_delta`、cost 按进程记账、turn outcome

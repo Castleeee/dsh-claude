@@ -1,9 +1,11 @@
 # Installation and removal runbook
 
 Current guidance: 2026-10-17, fork plugin `0.1.64-fork.12`, Host 0.2.0 line.
-Branch: `port/upstream-tracked` on `Castleeee/dsh-claude` (fork of
-`Norman-else/dsh-claude`). This plugin is installed from a **built tarball**;
-there is no supported `link:` install — see §3.
+Repo: `Castleeee/dsh-claude` (fork of `Norman-else/dsh-claude`). `master` is the
+stable line and the default branch — every push or merge there builds and
+re-cuts the release, and that release is what gets installed. `feature/latest`
+is the unstable line and is never released. This plugin is installed from a
+**built tarball**; there is no supported `link:` install — see §3.
 
 ## 1. Identify the running installation
 
@@ -16,6 +18,14 @@ Examples below use `desktop`; substitute the actual profile throughout.
 If `dsh` is not on PATH, use that installation's CLI entry point instead.
 
 ## 2. Install the built tarball
+
+Fetch it from the release (stable, rebuilt by every push to `master`):
+
+```sh
+dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.12/norman-else-dsh-claude-0.1.64-fork.12.tgz
+```
+
+Or install a file you were handed:
 
 ```sh
 dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.12.tgz
@@ -44,7 +54,7 @@ node -p "require(require('os').homedir()+'/.dsh/profiles/desktop/node_modules/@n
 Requires Node.js 20 or later and pnpm. From the checkout:
 
 ```sh
-git clone -b port/upstream-tracked https://github.com/Castleeee/dsh-claude.git
+git clone https://github.com/Castleeee/dsh-claude.git   # master is the default branch
 cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check
@@ -63,7 +73,7 @@ packing; `prepack` rebuilds it inside `pnpm pack` regardless. The result is
 makes Node resolve those ahead of the Host's own 0.2.0 line, the Host then
 judges all public plugins incompatible, and Desktop starts with no window and no
 log. `pnpm pack` is what keeps `devDependencies` out. Details:
-`UPSTREAM-MERGE-NOTES.md` §6.1.
+`UPSTREAM-MERGE-NOTES.md` §4.1.
 
 If a build is deliberately run beside a live profile, finish active turns first:
 a build can trigger a live client reload and interrupt projection subscriptions.

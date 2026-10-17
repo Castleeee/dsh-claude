@@ -1,19 +1,20 @@
-# Build the plugin on every push and publish it as a release asset, so the
-# fork can be installed from one stable URL:
+# Build the plugin when the stable line moves, and publish it as a release
+# asset, so the fork can be installed from one stable URL:
 #
 #   dsh plugin --profile desktop add \
 #     https://github.com/Castleeee/dsh-claude/releases/download/v<version>/norman-else-dsh-claude-<version>.tgz
 #
-# The release tag is `v<version>` from package.json, so it is a rolling release:
-# a push re-cuts the same tag with the newest build, and the URL only changes
-# when the version does.
+# `master` is the stable line: only a push to it (or a merge, which is a push)
+# builds and publishes. `feature/latest` is the unstable line and never
+# releases. The release tag is `v<version>` from package.json, so it is a
+# rolling release: a push re-cuts the same tag with the newest build, and the
+# URL only changes when the version does.
 name: Release
 
 on:
   push:
     branches:
       - master
-      - port/upstream-tracked
   workflow_dispatch:
 
 permissions:

@@ -11,10 +11,16 @@ Claude Code remains responsible for its agent loop, tools, `CLAUDE.md`, Skills, 
 
 ## 2. Installation and removal
 
-This is a fork. `origin` is `Castleeee/dsh-claude`, the working branch is
-`port/upstream-tracked`, and the package is installed from a **built tarball**.
-There is exactly one supported install route — the two sections below — and no
-other route is documented because the others do not work (see the warning).
+This is a fork. `origin` is `Castleeee/dsh-claude`, and it carries two lines:
+
+- **`master`** — the stable line, and the fork's default branch. Every push or
+  merge here runs the checks, packs the plugin and re-cuts the release below, so
+  that URL is always the newest stable build.
+- **`feature/latest`** — the unstable line. Work in progress lands here and is
+  never released.
+
+The package installs from a **built tarball**. There is no other supported route
+(see the warning at the end of this section).
 
 ### Requirements
 
@@ -28,7 +34,16 @@ other route is documented because the others do not work (see the warning).
 The plugin never asks for or stores Claude credentials. Authenticate through the
 local Claude Code CLI before using the plugin.
 
-### Install a tarball you were given
+### Install from the release
+
+Stable builds are published from `master`. This URL is stable across pushes —
+the release is re-cut in place, so it always points at the newest stable build:
+
+```sh
+dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.12/norman-else-dsh-claude-0.1.64-fork.12.tgz
+```
+
+### Install a tarball file you were given
 
 ```sh
 dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.12.tgz
@@ -38,10 +53,10 @@ Quit Desktop completely, reopen it, then create a conversation and select
 **Claude** from the Agent Preset picker. Substitute your actual profile
 (`desktop`, or `web` for a standalone Web installation).
 
-### Install by building the fork yourself
+### Install by building the stable line yourself
 
 ```sh
-git clone -b port/upstream-tracked https://github.com/Castleeee/dsh-claude.git
+git clone https://github.com/Castleeee/dsh-claude.git   # master is the default branch
 cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check                                   # typecheck + test + build, writes lib/
@@ -57,7 +72,7 @@ conversation.
 > resolve those ahead of the Host's own 0.2.0 line, the Host then judges every
 > public plugin incompatible, and Desktop starts with no window and no log at
 > all. Packing is what keeps `devDependencies` out of the install. The full
-> failure story is in `UPSTREAM-MERGE-NOTES.md` §6.1.
+> failure story is in `UPSTREAM-MERGE-NOTES.md` §4.1.
 
 ### Remove the plugin
 
