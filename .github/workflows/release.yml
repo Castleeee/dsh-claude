@@ -1,0 +1,121 @@
+# Build the plugin on every push and publish it as a release asset, so the
+# fork can be installed from one stable URL:
+#
+#   dsh plugin --profile desktop add \
+#     https://github.com/Castleeee/dsh-claude/releases/download/v<version>/norman-else-dsh-claude-<version>.tgz
+#
+# The release tag is `v<version>` from package.json, so it is a rolling release:
+# a push re-cuts the same tag with the newest build, and the URL only changes
+# when the version does.
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+      - port/upstream-tracked
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `packageManager` field in package.json, and the lockfile was written
+      # by pnpm 12, so pin the same major rather than letting pnpm guess.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # One case in the suite is environment-dependent: with a lowercase
+      # `http_proxy` / `https_proxy` set, `hasProxyEnv` reads it as a system
+      # proxy and the "child that has none" case fails. Unset both spellings.
+      - name: Check (typecheck, tests, build)
+        run: >-
+          env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy
+          -u ALL_PROXY -u all_proxy pnpm check
+
+      - name: Pack
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p dist-pack
+          version=$(node -p "require('./package.json').version")
+          asset="norman-else-dsh-claude-${version}.tgz"
+          pnpm pack --pack-destination dist-pack
+          test -f "dist-pack/${asset}"
+          {
+            echo "version=${version}"
+            echo "tag=v${version}"
+            echo "asset=dist-pack/${asset}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        env:
+          VERSION: ${{ steps.pack.outputs.version }}
+          TAG: ${{ steps.pack.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name="norman-else-dsh-claude-${VERSION}.tgz"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${name}"
+          {
+            echo "Built from \`${GITHUB_SHA:0:7}\` on \`${GITHUB_REF_NAME}\`."
+            echo
+            echo '## Install'
+            echo
+            echo '```sh'
+            echo "dsh plugin --profile desktop add ${url}"
+            echo '```'
+            echo
+            echo 'Or hand the tarball file itself to the plugin installer. Quit Desktop'
+            echo 'completely and reopen it afterwards, then pick **Claude** in a new'
+            echo 'conversation. Substitute your own profile name (`desktop`, or `web`).'
+            echo
+            echo '## Requirements'
+            echo
+            echo '- DSH Desktop whose Host is on the **0.2.0** package line.'
+            echo '- A local Claude Code CLI that is already authenticated.'
+            echo
+            echo '> **Never `link:` this fork.** Its devDependencies carry the'
+            echo '> `0.1.7-rc.2` `@deepseek-ai/*` packages; a link makes Node resolve'
+            echo "> those ahead of the Host's own 0.2.0 line, and Desktop starts with"
+            echo '> no window and no log at all.'
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.pack.outputs.tag }}"
+          asset="${{ steps.pack.outputs.asset }}"
+          # Rolling release: drop the previous cut of this tag (its asset
+          # belongs to an older commit), then publish the fresh one at the
+          # commit that triggered this run.
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" "$asset" \
+            --title "$tag" \
+            --target "$GITHUB_SHA" \
+            --notes-file RELEASE_NOTES.md
+          {
+            echo "### Published \`${tag}\`"
+            echo
+            echo "https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/$(basename "$asset")"
+          } >> "$GITHUB_STEP_SUMMARY"
