@@ -67,14 +67,6 @@ The Claude preset is declared by the package's bundle patch, so removing the pac
 dsh plugin --profile desktop remove @norman-else/dsh-claude
 ```
 
-Plugin 0.1.57 and earlier also copied a compatibility preset to `$DSH_HOME/.agent-presets/claude`. Host 0.1.7 no longer reads that directory; remove the leftover copy with:
-
-```sh
-dsh plugin --profile desktop exec dsh-claude remove-preset
-```
-
-Cleanup removes only installer-written content and refuses to delete user-modified preset files.
-
 ## 3. Features
 
 ### 3.1 Conversation
@@ -187,7 +179,7 @@ Both types require enough detail for someone else to reproduce your situation wi
 
 - **Stay out-of-tree.** Use only public DSH exports. Never patch the installed DSH checkout, and never depend on DSH internals that are not exported.
 - **Respect the ownership split.** Claude Code owns its agent loop and tools; this plugin owns presentation, approval and question surfaces, and managed process lifetime. Changes that re-implement Claude Code behavior inside the plugin will be rejected.
-- **Read the spec first** when you change runtime behavior: `docs/aegis/spec/2026-08-15-dsh-claude-spec.md` and the current plan under `docs/aegis/plan/` and `docs/aegis/plans/`. If you are reacting to a DSH Desktop upgrade, follow `docs/upgrading-dsh-desktop.md` — the Host ships no type declarations, so `pnpm typecheck` cannot see its API drift.
+- **After a DSH Desktop upgrade**, re-check the Host's own API by hand: it ships no type declarations, so `pnpm typecheck` cannot see drift. Compare against the installed `resources/app/node_modules/@deepseek-ai/` packages and watch the log for `dsh-claude client [boot-check]` and `[slot-entry-crashed]`.
 - **Never log, persist, render, or test with real credentials.** Redact before any durable event append.
 - **Run `pnpm check`** — typecheck for both tsconfigs, the Vitest suite, and the build — and make sure it passes before you open the pull request. Do not claim a change works without it.
 - **Cover behavior with tests** where the change is testable. A `fix` should come with a test that fails before the change and passes after it.

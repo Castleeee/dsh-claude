@@ -124,14 +124,5 @@ The bundle patch declares the preset, so removing the package removes it:
 dsh plugin --profile desktop remove @norman-else/dsh-claude
 ```
 
-Plugin 0.1.57 and earlier also wrote a compatibility copy to
-`$DSH_HOME/.agent-presets/claude`, which Host 0.1.7 no longer reads. Delete it
-while the package is still installed:
-
-```sh
-dsh plugin --profile desktop exec dsh-claude remove-preset
-```
-
-Cleanup refuses user-modified presets; review them manually rather than forcing
-removal. Restart Desktop after uninstalling. Removing the plugin does not mean
-all Claude transcripts, sidecars, settings, or worktrees have been deleted.
+Restart Desktop after uninstalling. Removing the plugin does not mean all Claude
+transcripts, sidecars, settings, or worktrees have been deleted.

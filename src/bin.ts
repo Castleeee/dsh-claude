@@ -7,7 +7,6 @@ import { delimiter, isAbsolute, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 import { parseClaudeVersion } from './executable.ts'
-import { removeManagedPreset } from './preset-installer.ts'
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name)
@@ -85,11 +84,7 @@ async function doctor(): Promise<number> {
 async function main(): Promise<number> {
   const command = process.argv[2] ?? 'doctor'
   if (command === 'doctor') return doctor()
-  if (command === 'remove-preset') {
-    process.stdout.write(`${await removeManagedPreset()}\n`)
-    return 0
-  }
-  process.stderr.write(`Usage: dsh-claude [doctor [--executable PATH] | remove-preset]\n`)
+  process.stderr.write(`Usage: dsh-claude [doctor [--executable PATH]]\n`)
   return 2
 }
 

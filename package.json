@@ -31,7 +31,6 @@
   },
   "files": [
     "lib",
-    "legacy-preset",
     "cordis.patch.yml",
     "README.md",
     "INSTALL.md",

@@ -24,9 +24,7 @@ describe('published package contract', () => {
       'src/index.ts',
       'src/adapter.ts',
       'src/client/conversation-sidecar.ts',
-      'src/preset-installer.ts',
       'test/adapter.test.ts',
-      'test/preset-installer.test.ts',
     ]
     const contents = await Promise.all(paths.map(path => readFile(join(root, path), 'utf8')))
     expect(contents.join('\n')).not.toContain('claude-code-cli')
@@ -62,12 +60,11 @@ describe('published package contract', () => {
     expect(host).toContain('ctx.attachments')
   })
 
-  it('documents the DSH package line the plugin is actually built on', async () => {
+  it('documents the Host line the fork targets, not a superseded one', async () => {
     const readme = await readFile(join(root, 'README.md'), 'utf8')
-    expect(readme).toContain('developed against the DSH `0.1.7-rc.2` package line')
-    expect(readme).not.toContain('developed against the DSH `0.1.5-rc.2` package line')
-    expect(readme).toContain('0.1.36')
-    expect(readme).toContain('0.1.57')
+    expect(readme).toContain('**0.2.0** package line')
+    expect(readme).not.toContain('0.1.36')
+    expect(readme).not.toContain('0.1.57')
   })
 
   it('declares every required client service provider in the boot graph', async () => {
