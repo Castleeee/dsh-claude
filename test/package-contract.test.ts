@@ -44,25 +44,26 @@ describe('published package contract', () => {
       .map(([, version]) => version)
     // Issue #19: a `*` peer let a 0.1.1-rc.2 Host install 0.1.37+ and die on
     // `import { ToolCallId } from '@deepseek-ai/dsh-llm'`. Every dsh-* peer
-    // must name the line the plugin is built on. Host 0.1.7 replaced the preset
-    // registry and renamed the shared icons, so it is also the floor.
+    // must name the line the plugin is built on, and that line now follows the
+    // Host the plugin actually runs on rather than a superseded one.
     const dshPeers = Object.entries(packageJson.peerDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
     expect(dshPeers.length).toBeGreaterThan(0)
     for (const [name, range] of dshPeers) {
-      expect(range, name).toBe('>=0.1.7-rc.2')
+      expect(range, name).toBe('>=0.2.1-rc.2')
     }
-    expect(packageJson.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.1.7-rc.2')
+    expect(packageJson.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBe('>=0.2.1-rc.2')
     expect(dshDevelopmentVersions.length).toBeGreaterThan(0)
-    // Desktop 2.0.15 uses 0.1.7-rc.2, and every development package is on it.
-    expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.1.7-rc.2']))
-    expect(workspace).toContain("'@deepseek-ai/dsh-*': 0.1.7-rc.2")
+    // The development graph is the line the installed Host ships, so
+    // `pnpm typecheck` sees the API this plugin is actually loaded against.
+    expect(new Set(dshDevelopmentVersions)).toEqual(new Set(['0.2.1-rc.2']))
+    expect(workspace).toContain("'@deepseek-ai/dsh-*': 0.2.1-rc.2")
     expect(host).toContain("'attachments'")
     expect(host).toContain('ctx.attachments')
   })
 
   it('documents the Host line the fork targets, not a superseded one', async () => {
     const readme = await readFile(join(root, 'README.md'), 'utf8')
-    expect(readme).toContain('**0.2.0** package line')
+    expect(readme).toContain('**0.2.1-rc.2** package line')
     expect(readme).not.toContain('0.1.36')
     expect(readme).not.toContain('0.1.57')
   })

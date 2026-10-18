@@ -135,17 +135,18 @@ src/repository-status-routes.ts
 
 ## 4. 陷阱（踩过的，别再踩）
 
-### 4.1 千万不要把 fork `link:` 进 profile
+### 4.1 不要把 fork `link:` 进 profile
 
 **症状**：官方 App 启动时静默卡住（窗口不出现、无报错、CPU 0%），或 CLI 启动报
 `startup failed: 1 required plugin did not activate`。
 
-**原因**：fork 自己的 `node_modules/@deepseek-ai/*` 是 `0.1.7-rc.2`（devDependencies，
-只为本地 typecheck）。`link:` 之后 Node 从 fork 的真实路径解析它的 import，于是这套旧包
-遮蔽了 Host 的 0.2.0，所有公开插件被判不兼容 → 启动失败。
+**原因（2026-10-18 更新）**：开发图以前固定是 `0.1.7-rc.2` 而 Host 已经 0.2.x，所以
+`link:` **必然**踩雷。现在开发图已与 Host 同线（`0.2.1-rc.2`），link 当下能跑——**但没有
+保障**：App 一升级，checkout 里的 devDependencies 就落后，同一个故障会用完全相同的方式
+静默回来（Node 从 fork 的真实路径解析 import，旧包遮蔽 Host 自己的，所有公开插件被判不兼容）。
 
 **正确做法**：`pnpm pack` 打成 tgz 再 `dsh plugin add`。devDependencies 不会进 tgz，
-运行时自然解析到 Host 的 0.2.0。装完确认：
+运行时自然解析到 Host 自己那套。装完确认：
 
 ```sh
 ls ~/.dsh/profiles/desktop/node_modules | grep -c deepseek   # 必须输出 0
@@ -156,16 +157,36 @@ ls ~/.dsh/profiles/desktop/node_modules | grep -c deepseek   # 必须输出 0
 官方 App、`DSH Desktop.app`、`DSH Desktop Beta.app` 共用 `~/.dsh`；同时跑会让两个 Host
 驱动同一份 session 与插件状态，且后两者端口相同会互相抢占。
 
-### 4.3 Host API 漂移（合并时容易撞）
+### 4.3 Host API 漂移（每次 App 升级都要跟一遍）
 
-Host 不发类型声明，`pnpm typecheck` 看不见它的 API 变化。当前已迁到 Host 0.2.0：
+**开发图现在与 Host 同步**：`package.json` 的 78 个 `@deepseek-ai/dsh-*` devDependencies、
+`pnpm-workspace.yaml` 的 override、以及 `test/package-contract.test.ts` 的断言，全部钉在
+Host 当前那条线（`0.2.1-rc.2`）。Host 不发类型声明，所以**只有这一步能让 `pnpm typecheck`
+看见真实的 Host API**；不同步就又会变成「编译期一套、运行期一套」。
 
-| 旧 | 0.2.0 |
+跟法：先从 App 读出它实际打包的版本——`defaults read "/Applications/DeepSeek Harness.app/Contents/Info.plist" CFBundleShortVersionString`，
+或直接从 `app.asar` 里抽查 `"name": "@deepseek-ai/dsh-xxx"` 附近的 `"version"`——再把
+package.json / pnpm-workspace.yaml / 本文件 / 该测试一起改成同一版本，然后 `pnpm install && pnpm check`。
+
+**0.1.7 → 0.2.x 那次迁移撞过的**：
+
+| 旧 | 新 |
 |---|---|
 | `@deepseek-ai/dsh-agent-presets` | `@deepseek-ai/dsh-agent-preset-registry` |
 | `SettingsForms.get()` | 已移除，用 `describe()` |
 | `conversation.chat.turnTail` 带 `select` | 普通 list slot，`inject` 只给 `{ t }` |
 | `Icon*Outline16` | `Icon*OutlineRegular` / `Icon*OutlineMedium` |
+
+**0.2.1-rc.2 这次抓到的（已修，下次照查）**：
+
+- `@deepseek-ai/dsh-invariants` 在 0.2.1 线**已下线**（最后版本 `0.2.0-rc.2`）→ 从 devDeps 删除。
+- `JobKindMap` 只剩 `bash`：Host 不再声明 `subagent`。`src/host-jobs.ts` 改为在插件自己的
+  `declare module` 里声明它（kind 是不透明 id 命名空间，插件是这些 job 的生产者）。
+- Host 客户端包 `dsh-client-ui-conversation` 的 `require` 列表新增 `zod`；
+  `test/client-sidecar-conversation.test.ts` 的 `__ModuleLoader__` 垫片要跟着补，
+  否则报 `Cannot read properties of undefined (reading 'z')`。
+- 升级后 `lib/index.mjs` 与升级前**逐字节相同**（只变了 `index.d.mts` 与 source map）——
+  说明这类升级只影响类型保真度，不影响运行时。
 
 ### 4.4 测试里有一个环境相关的失败
 

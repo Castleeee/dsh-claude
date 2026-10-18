@@ -1,6 +1,6 @@
 # Installation and removal runbook
 
-Current guidance: 2026-10-17, fork plugin `0.1.64-fork.12`, Host 0.2.0 line.
+Current guidance: 2026-10-18, fork plugin `0.1.64-fork.13`, Host `0.2.1-rc.2` line.
 Repo: `Castleeee/dsh-claude` (fork of `Norman-else/dsh-claude`). `master` is the
 stable line and the default branch — every push or merge there builds and
 re-cuts the release, and that release is what gets installed. `feature/latest`
@@ -22,13 +22,13 @@ If `dsh` is not on PATH, use that installation's CLI entry point instead.
 Fetch it from the release (stable, rebuilt by every push to `master`):
 
 ```sh
-dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.12/norman-else-dsh-claude-0.1.64-fork.12.tgz
+dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.13/norman-else-dsh-claude-0.1.64-fork.13.tgz
 ```
 
 Or install a file you were handed:
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.12.tgz
+dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.13.tgz
 ```
 
 Wait for the profile operation to finish, then quit Desktop completely and
@@ -68,11 +68,12 @@ PowerShell does not use the POSIX `PATH=... command` syntax.
 packing; `prepack` rebuilds it inside `pnpm pack` regardless. The result is
 `norman-else-dsh-claude-<version>.tgz` in the checkout — install it with §2.
 
-**Do not `link:` the checkout.** The fork's `devDependencies` carry the
-`0.1.7-rc.2` `@deepseek-ai/*` packages, kept only for local typecheck; a link
-makes Node resolve those ahead of the Host's own 0.2.0 line, the Host then
-judges all public plugins incompatible, and Desktop starts with no window and no
-log. `pnpm pack` is what keeps `devDependencies` out. Details:
+**Install the packed tarball, not a `link:`.** The development graph follows the
+Host line, so a link resolves the same `@deepseek-ai/*` versions the Host has —
+until the App moves ahead. Then the checkout's older devDependencies are what
+Node resolves, the Host judges every public plugin incompatible, and Desktop
+starts with no window and no log. `pnpm pack` is what keeps `devDependencies`
+out of the install, so the tarball route cannot drift this way. Details:
 `UPSTREAM-MERGE-NOTES.md` §4.1.
 
 If a build is deliberately run beside a live profile, finish active turns first:

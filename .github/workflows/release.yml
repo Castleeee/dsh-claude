@@ -90,13 +90,14 @@ jobs:
             echo
             echo '## Requirements'
             echo
-            echo '- DSH Desktop whose Host is on the **0.2.0** package line.'
+            echo '- DSH Desktop whose Host is on the **0.2.1-rc.2** package line.'
             echo '- A local Claude Code CLI that is already authenticated.'
             echo
-            echo '> **Never `link:` this fork.** Its devDependencies carry the'
-            echo '> `0.1.7-rc.2` `@deepseek-ai/*` packages; a link makes Node resolve'
-            echo "> those ahead of the Host's own 0.2.0 line, and Desktop starts with"
-            echo '> no window and no log at all.'
+            echo '> **Install this tarball; do not `link:` a checkout.** A link'
+            echo '> resolves the devDependencies the checkout carries, which match'
+            echo '> the Host line only until the App moves ahead; after that the'
+            echo '> Host reads every public plugin as incompatible and starts with'
+            echo '> no window and no log.'
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 

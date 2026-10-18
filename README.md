@@ -24,10 +24,12 @@ The package installs from a **built tarball**. There is no other supported route
 
 ### Requirements
 
-- DSH Desktop whose Host is on the **0.2.0** package line. This fork was ported
-  from the `0.1.7-rc.2` API to Host 0.2.0 (slot shapes,
-  `Icon*OutlineRegular`, `SettingsForms.describe()`); a Host on an older line
-  will fail to activate the plugin.
+- DSH Desktop whose Host is on the **0.2.1-rc.2** package line. This fork's
+  development graph follows the Host it actually runs on: every
+  `@deepseek-ai/dsh-*` devDependency and its `pnpm-workspace.yaml` override is
+  pinned to the version the installed App ships, so `pnpm typecheck` sees the
+  API the plugin is loaded against rather than a superseded one. A Host on an
+  older line may fail to activate the plugin.
 - A local Claude Code installation that is already authenticated.
 - Node.js 20 or later, plus pnpm, when building the tarball yourself.
 
@@ -40,13 +42,13 @@ Stable builds are published from `master`. This URL is stable across pushes —
 the release is re-cut in place, so it always points at the newest stable build:
 
 ```sh
-dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.12/norman-else-dsh-claude-0.1.64-fork.12.tgz
+dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.13/norman-else-dsh-claude-0.1.64-fork.13.tgz
 ```
 
 ### Install a tarball file you were given
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.12.tgz
+dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.13.tgz
 ```
 
 Quit Desktop completely, reopen it, then create a conversation and select
@@ -61,18 +63,20 @@ cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check                                   # typecheck + test + build, writes lib/
 pnpm pack --pack-destination .
-dsh plugin --profile desktop add "$PWD/norman-else-dsh-claude-0.1.64-fork.12.tgz"
+dsh plugin --profile desktop add "$PWD/norman-else-dsh-claude-0.1.64-fork.13.tgz"
 ```
 
 Then quit Desktop completely, reopen it, and select **Claude** in a new
 conversation.
 
-> **Never `link:` this fork.** Its `devDependencies` carry the `0.1.7-rc.2`
-> `@deepseek-ai/*` packages (kept only for local typecheck). A link makes Node
-> resolve those ahead of the Host's own 0.2.0 line, the Host then judges every
-> public plugin incompatible, and Desktop starts with no window and no log at
-> all. Packing is what keeps `devDependencies` out of the install. The full
-> failure story is in `UPSTREAM-MERGE-NOTES.md` §4.1.
+> **Install the packed tarball, not a `link:`.** The development graph follows
+> the Host line, so a link would resolve the same `@deepseek-ai/*` versions the
+> Host already has — today. It stops being true as soon as the App moves ahead:
+> the checkout keeps the older devDependencies, Node resolves those ahead of the
+> Host's own, the Host judges every public plugin incompatible, and Desktop
+> starts with no window and no log at all. Packing is what keeps
+> `devDependencies` out of the install, so the tarball route cannot drift this
+> way. Background: `UPSTREAM-MERGE-NOTES.md` §4.1.
 
 ### Remove the plugin
 
