@@ -42,13 +42,13 @@ Stable builds are published from `master`. This URL is stable across pushes —
 the release is re-cut in place, so it always points at the newest stable build:
 
 ```sh
-dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.13/norman-else-dsh-claude-0.1.64-fork.13.tgz
+dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
 
 ### Install a tarball file you were given
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.13.tgz
+dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
 
 Quit Desktop completely, reopen it, then create a conversation and select
@@ -63,11 +63,24 @@ cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check                                   # typecheck + test + build, writes lib/
 pnpm pack --pack-destination .
-dsh plugin --profile desktop add "$PWD/norman-else-dsh-claude-0.1.64-fork.13.tgz"
+dsh plugin --profile desktop add "$PWD/norman-else-dsh-claude-0.1.65-fork.1.tgz"
 ```
 
 Then quit Desktop completely, reopen it, and select **Claude** in a new
 conversation.
+
+For work on this fork itself, one script switches a profile between the three
+install modes — link the checkout while developing, pack it locally, or take the
+release asset:
+
+```sh
+node scripts/profile-mode.mjs link      # development: edits are live
+node scripts/profile-mode.mjs dist
+node scripts/profile-mode.mjs release
+```
+
+Details, including when a linked checkout is unsafe, are in `INSTALL.md` §7 and
+`MAINTENANCE.md`.
 
 > **Install the packed tarball, not a `link:`.** The development graph follows
 > the Host line, so a link would resolve the same `@deepseek-ai/*` versions the
@@ -76,7 +89,7 @@ conversation.
 > Host's own, the Host judges every public plugin incompatible, and Desktop
 > starts with no window and no log at all. Packing is what keeps
 > `devDependencies` out of the install, so the tarball route cannot drift this
-> way. Background: `UPSTREAM-MERGE-NOTES.md` §4.1.
+> way. Background: `MAINTENANCE.md` §5.1.
 
 ### Remove the plugin
 

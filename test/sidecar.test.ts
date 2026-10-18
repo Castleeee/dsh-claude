@@ -193,29 +193,7 @@ describe('Claude sidecar repository', () => {
     })).toThrow('invalid sidecar activity')
   })
 
-  it('reads the prior plugin data root and copies it forward on write', async () => {
-    const base = await mkdtemp(join(tmpdir(), 'dsh-claude-sidecar-migration-'))
-    roots.push(base)
-    const root = join(base, 'dsh-claude', 'sessions')
-    const legacyRoot = join(base, 'dsh-claude-code', 'sessions')
-    const sessionId = 'legacy-session'
-    const file = `${Buffer.from(sessionId).toString('base64url')}.json`
-    await mkdir(legacyRoot, { recursive: true })
-    await writeFile(join(legacyRoot, file), `${JSON.stringify({
-      schemaVersion: 1,
-      revision: 2,
-      activities: [],
-      binding: { claudeSessionId: 'legacy', sdkVersion: '0.3.233', cwd: '/workspace' },
-    })}\n`)
-    const store = new ClaudeSidecarRepository({ root, legacyRoot })
-
-    await expect(store.read(sessionId)).resolves.toMatchObject({ revision: 2, binding: { claudeSessionId: 'legacy' } })
-    await store.writeContextUsage(sessionId, { model: 'default', totalTokens: 10, maxTokens: 100, percentage: 10, categories: [] })
-    await expect(readFile(join(root, file), 'utf8')).resolves.toContain('legacy')
-    await expect(readFile(join(legacyRoot, file), 'utf8')).resolves.not.toContain('contextUsage')
-  })
-
-  it('imports readable legacy events idempotently without replacing newer sidecar state', async () => {
+  it('seeds from readable session events idempotently without replacing newer sidecar state', async () => {
     const store = await repository()
     const legacy = [
       { type: 'claude-code/session-bound', data: { claudeSessionId: 'legacy', sdkVersion: '0.3.233', cwd: '/workspace' } },
@@ -223,13 +201,13 @@ describe('Claude sidecar repository', () => {
       { type: 'claude-code/context-usage', data: { model: 'old', totalTokens: 10, maxTokens: 100, percentage: 10, categories: [] } },
       { type: 'claude-code/tasks', data: { tasks: [{ taskId: 'old', description: 'old', status: 'running' }] } },
     ] as never
-    const first = await store.importLegacy('session', legacy)
-    const second = await store.importLegacy('session', legacy)
+    const first = await store.seedFromSessionEvents('session', legacy)
+    const second = await store.seedFromSessionEvents('session', legacy)
     expect(second).toEqual(first)
 
     await store.writeBinding('session', { claudeSessionId: 'new', cwd: '/workspace' })
     await store.writeContextUsage('session', { model: 'new', totalTokens: 20, maxTokens: 100, percentage: 20, categories: [] })
-    const current = await store.importLegacy('session', legacy)
+    const current = await store.seedFromSessionEvents('session', legacy)
     expect(current.binding?.claudeSessionId).toBe('new')
     expect(current.contextUsage?.model).toBe('new')
     expect(current.activities).toHaveLength(1)

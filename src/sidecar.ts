@@ -92,7 +92,6 @@ export type ClaudeSidecarNotification = ClaudeSidecarDelta & { readonly seq: num
 
 export interface ClaudeSidecarRepositoryOptions {
   readonly root?: string
-  readonly legacyRoot?: string
 }
 
 function emptyProjection(): ClaudeSidecarProjection {
@@ -287,16 +286,8 @@ const PROGRESS_STATUS_TITLES: ReadonlySet<string> = new Set(
   [...CLAUDE_PROGRESS_SUBTYPES].map(subtype => claudeStatusTitle(subtype)),
 )
 
-/** The same telemetry under the title it carried before it was classified as
- *  progress: the unknown-type fallback named those rows after the message type
- *  and filed them as warnings. */
-const LEGACY_PROGRESS_TITLES: ReadonlySet<string> = new Set([
-  `${CLAUDE_UNKNOWN_MESSAGE_PREFIX}tool_progress`,
-])
-
 function isProgressActivity(activity: ClaudeActivityEvent): boolean {
   if (activity.title === undefined) return false
-  if (LEGACY_PROGRESS_TITLES.has(activity.title)) return true
   return activity.kind === 'status' && PROGRESS_STATUS_TITLES.has(activity.title)
 }
 
@@ -340,7 +331,6 @@ function normalizeBinding(
 
 export class ClaudeSidecarRepository {
   readonly root: string
-  readonly legacyRoot: string | undefined
   readonly #pending = new Map<string, Promise<unknown>>()
   /** Latest durable projection per session; disk is read once and written through. */
   readonly #latest = new Map<string, ClaudeSidecarProjection>()
@@ -355,8 +345,6 @@ export class ClaudeSidecarRepository {
 
   constructor(options: ClaudeSidecarRepositoryOptions = {}) {
     this.root = options.root ?? dshHomePath('plugins', 'dsh-claude', 'sessions')
-    this.legacyRoot = options.legacyRoot
-      ?? (options.root === undefined ? dshHomePath('plugins', 'dsh-claude-code', 'sessions') : undefined)
   }
 
   async read(sessionId: string): Promise<ClaudeSidecarProjection> {
@@ -618,7 +606,12 @@ export class ClaudeSidecarRepository {
     }))
   }
 
-  importLegacy(sessionId: string, events: readonly SessionEvent[]): Promise<ClaudeSidecarProjection> {
+  /** Seed the sidecar from the session's own durable events.
+   *
+   *  The session log is the source of truth and this document is its cache, so
+   *  an entry created for a resumed session rebuilds the binding, usage, tasks
+   *  and activity it needs from the events that are already there. */
+  seedFromSessionEvents(sessionId: string, events: readonly SessionEvent[]): Promise<ClaudeSidecarProjection> {
     const importedActivities = events
       .filter(event => event.type === CLAUDE_ACTIVITY_EVENT)
       .map(event => activity(event.data))
@@ -686,13 +679,7 @@ export class ClaudeSidecarRepository {
       return parseClaudeSidecar(JSON.parse(await readFile(this.#path(sessionId), 'utf8')))
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    if (this.legacyRoot === undefined) return emptyProjection()
-    try {
-      return parseClaudeSidecar(JSON.parse(await readFile(this.#path(sessionId, this.legacyRoot), 'utf8')))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyProjection()
-      throw error
+      return emptyProjection()
     }
   }
 

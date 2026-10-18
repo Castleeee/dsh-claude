@@ -930,7 +930,7 @@ describe('Claude sidecar conversation projection', () => {
     expect(render({ owned: false, activities: [] })).toBe('')
     expect(render({ owned: true, activities: [] })).toBe('')
     // A fresh conversation that has sent nothing yet stays invisible even when a
-    // usage sample is already present — `importLegacy` seeds `contextUsage` from
+    // usage sample is already present — `seedFromSessionEvents` seeds `contextUsage` from
     // a resumed session's own log, so the figure alone does not mean this
     // session has run. The first turn is what brings the ring in, and a session
     // whose own history seeded it carries activities, so it still shows at once.

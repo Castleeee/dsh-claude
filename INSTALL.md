@@ -1,6 +1,6 @@
 # Installation and removal runbook
 
-Current guidance: 2026-10-18, fork plugin `0.1.64-fork.13`, Host `0.2.1-rc.2` line.
+Current guidance: 2026-10-18, fork plugin `0.1.65-fork.1`, Host `0.2.1-rc.2` line.
 Repo: `Castleeee/dsh-claude` (fork of `Norman-else/dsh-claude`). `master` is the
 stable line and the default branch — every push or merge there builds and
 re-cuts the release, and that release is what gets installed. `feature/latest`
@@ -22,13 +22,13 @@ If `dsh` is not on PATH, use that installation's CLI entry point instead.
 Fetch it from the release (stable, rebuilt by every push to `master`):
 
 ```sh
-dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.64-fork.13/norman-else-dsh-claude-0.1.64-fork.13.tgz
+dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
 
 Or install a file you were handed:
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.64-fork.13.tgz
+dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
 
 Wait for the profile operation to finish, then quit Desktop completely and
@@ -74,7 +74,7 @@ until the App moves ahead. Then the checkout's older devDependencies are what
 Node resolves, the Host judges every public plugin incompatible, and Desktop
 starts with no window and no log. `pnpm pack` is what keeps `devDependencies`
 out of the install, so the tarball route cannot drift this way. Details:
-`UPSTREAM-MERGE-NOTES.md` §4.1.
+`MAINTENANCE.md` §5.1.
 
 If a build is deliberately run beside a live profile, finish active turns first:
 a build can trigger a live client reload and interrupt projection subscriptions.
@@ -137,3 +137,32 @@ dsh plugin --profile desktop remove @norman-else/dsh-claude
 
 Restart Desktop after uninstalling. Removing the plugin does not mean all Claude
 transcripts, sidecars, settings, or worktrees have been deleted.
+
+## 7. Local development: pick the install mode
+
+Three modes exist, and `scripts/profile-mode.mjs` switches one profile between
+them (`DSH_PROFILE`, default `desktop`; `DSH_HOME`, default `~/.dsh`):
+
+```sh
+node scripts/profile-mode.mjs link      # link the checkout        (development)
+node scripts/profile-mode.mjs dist      # pack it, install the tarball
+node scripts/profile-mode.mjs release   # install the release asset
+```
+
+| | `link` | `dist` / `release` |
+|---|---|---|
+| Rebuild needed | no repack: the profile resolves the checkout | repack + reinstall |
+| Development | the only mode where an edit is live | a full round trip per change |
+| Risk | the checkout's `@deepseek-ai/dsh-*` devDependencies enter the Host's resolution path | `devDependencies` never enter the tarball |
+
+`link` is safe **only while the checkout's development graph is on the Host's
+line**. After a Desktop upgrade, run §2 of `MAINTENANCE.md` (re-point the 78
+devDependencies, the workspace override and the contract test at the new Host
+version) **before** switching back to `link`; otherwise the Host loads the
+checkout's older `@deepseek-ai/*` packages, reads every public plugin as
+incompatible, and starts with no window and no log at all.
+
+Every mode ends with quitting and reopening Desktop; the client bundle is loaded
+at boot. The script prints the installed version and the count of
+`@deepseek-ai` packages inside the profile — that count must be `0`.
+

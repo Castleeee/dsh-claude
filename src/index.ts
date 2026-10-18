@@ -597,9 +597,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // no agent lifecycle edge, so worktree cleanup reconciles leases against
   // the workspace registry instead: unreferenced clean worktrees are removed
   // on boot, on the Client's deletion kick, and on a slow interval.
-  // workspaceRegistry is not part of this plugin's typed host surface yet;
-  // inject through an untyped escape hatch so older Hosts without the service
-  // simply never start the sweep.
+  // workspaceRegistry is not part of this plugin's typed host surface yet, so
+  // it goes through an untyped escape hatch; a Host without the service simply
+  // never starts the sweep.
   const injectWorkspaceRegistry = ctx.inject as unknown as (
     deps: readonly string[],
     callback: (sweepCtx: Context & {

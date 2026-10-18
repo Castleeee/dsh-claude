@@ -27,6 +27,19 @@ describe('Claude model lineup drift', () => {
     expect(releases.length).toBeGreaterThanOrEqual(2)
   })
 
+  // The wide route's marker is case-insensitive: a CLI behind a proxy spelled
+  // it `[1M]`, which used to produce a bare row and strand a persisted
+  // `fable[1m]`. Synthetic on purpose -- a lineup captured through a proxy is
+  // not a Claude Code release's own lineup.
+  it('reads the wide route however the CLI spells it', () => {
+    recordClaudeModels([
+      { value: 'claude-fable-5[1M]', resolvedModel: 'claude-fable-5[1M]', displayName: 'Fable 5', description: '' },
+    ] as never)
+    const row = latestClaudeModels().find(item => item.id === 'fable[1m]')
+    expect(row).toBeDefined()
+    expect(row?.contextWindow).toBe(1_000_000)
+  })
+
   // DSH persists a selection as the row id and prints `claude/<id>` for one no
   // row carries. Every id any earlier release advertised must therefore still
   // be a row after an upgrade, or be rewritten to one by the request hook.

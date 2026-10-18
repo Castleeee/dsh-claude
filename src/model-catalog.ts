@@ -40,8 +40,12 @@ export interface ClaudeModelRow {
   readonly supportsAutoMode?: boolean
 }
 
-/** A 1M-context route spells it in the id (`opus[1m]`, `claude-fable-5-1[1m]`). */
-const WIDE_ROUTE = /\[1m\]$/u
+/** A 1M-context route spells it in the id (`opus[1m]`, `claude-fable-5-1[1m]`).
+ *  Case-insensitive on purpose: a Claude Code build behind a proxy spelled it
+ *  `[1M]`, and that turned every wide row into a bare one -- no 1M window, and
+ *  an id a persisted `fable[1m]` no longer resolved to. Read either spelling,
+ *  advertise the plugin's own lowercase one. */
+const WIDE_ROUTE = /\[1m\]$/iu
 
 /** What the selector shows before the lineup is known -- the probe below failed
  *  or has not answered yet. `default` is the only id that is valid on every

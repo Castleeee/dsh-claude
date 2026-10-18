@@ -139,7 +139,7 @@ export function ClaudeContextMeter({ useClaudeProjection, t }: ClaudeContextMete
   const owned = useClaudeProjection(value => value.owned)
   const compaction = useClaudeProjection(value => latestCompaction(value.activities))
   // Whether this session has run at all, which is what a fresh conversation has
-  // not done yet. The usage sample alone cannot say so: `importLegacy` seeds
+  // not done yet. The usage sample alone cannot say so: `seedFromSessionEvents` seeds
   // `contextUsage` from a resumed session's own event log, so a session that has
   // sent nothing already holds a figure and would open wearing it. The activity
   // list is the honest signal — empty means nothing has run here, while any

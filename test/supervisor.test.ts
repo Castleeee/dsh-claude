@@ -197,10 +197,10 @@ class DeferredImportSidecar extends ClaudeSidecarRepository {
     this.#release = new Promise(resolve => { this.release = resolve })
   }
 
-  override async importLegacy(...args: Parameters<ClaudeSidecarRepository['importLegacy']>) {
+  override async seedFromSessionEvents(...args: Parameters<ClaudeSidecarRepository['seedFromSessionEvents']>) {
     this.#markStarted?.()
     await this.#release
-    return super.importLegacy(...args)
+    return super.seedFromSessionEvents(...args)
   }
 }
 
@@ -1385,7 +1385,7 @@ describe('Claude supervisor', () => {
       time: 5,
     })
     const runtime = supervisor(transport.create)
-    await sidecars.get(runtime)!.importLegacy(owner.agent.id as string, owner.agent.session.snapshotEvents())
+    await sidecars.get(runtime)!.seedFromSessionEvents(owner.agent.id as string, owner.agent.session.snapshotEvents())
     const output = await runtime.runTurn({ agent: owner.agent, prompt: 'continue' })
     expect(transport.queries[0]?.options.resume).toBe('persisted-claude-session')
     transport.queries[0]!.push(init('persisted-claude-session'))
@@ -1404,7 +1404,7 @@ describe('Claude supervisor', () => {
       time: 5,
     })
     const runtime = supervisor(transport.create)
-    await sidecars.get(runtime)!.importLegacy(owner.agent.id as string, owner.agent.session.snapshotEvents())
+    await sidecars.get(runtime)!.seedFromSessionEvents(owner.agent.id as string, owner.agent.session.snapshotEvents())
     // The last turn's Bash `cd` is where Claude Code resumes its shell.
     const output = await runtime.runTurn({ agent: owner.agent, prompt: 'continue' })
     transport.queries[0]!.push(init('persisted-claude-session', '/workspace/services/accounting-service'))

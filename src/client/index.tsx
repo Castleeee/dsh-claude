@@ -281,8 +281,8 @@ export function apply(ctx: Context): void {
       }
     },
   }, ClaudeActivityNode))
-  // Host 0.1.5 has no details column: the panels are tab types of the
-  // right sidebar, declared once here and opened per session below.
+  // The task, diff and overview panels are tab types of the right sidebar:
+  // declared once here, opened per session below.
   const sidebarTabs = registerClaudeSidebarTabs(ctx, {
     t,
     namespace,

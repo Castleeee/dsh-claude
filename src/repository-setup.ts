@@ -70,10 +70,6 @@ export interface RepositorySetupServiceOptions {
   /** One fixed directory for every new worktree. Unset, each worktree goes
    *  under its repository's {@link IN_REPOSITORY_WORKTREE_DIR}. */
   readonly worktreeRoot?: string
-  /** Where worktrees created before they moved into the repository live; the
-   *  only directory the orphan sweep lists. Defaults to `worktreeRoot`, then
-   *  to the plugin's own directory under `$DSH_HOME`. */
-  readonly legacyWorktreeRoot?: string
   readonly branchPrefix?: () => Promise<string>
   readonly cleanupGraceMs?: number
   /** Compress the composer draft into a branch slug; `undefined` result (or an
@@ -205,7 +201,6 @@ export class RepositorySetupService {
   readonly #runtime: RepositorySetupRuntime
   readonly #leasePath: string
   readonly #worktreeRoot: string | undefined
-  readonly #legacyWorktreeRoot: string
   readonly #branchPrefix: () => Promise<string>
   readonly #summarizeBranch: (intent: string) => Promise<string | undefined>
   readonly #cleanupGraceMs: number
@@ -216,7 +211,6 @@ export class RepositorySetupService {
     this.#runtime = runtime
     this.#leasePath = options.leasePath ?? dshHomePath('plugins', 'dsh-claude', 'worktrees.json')
     this.#worktreeRoot = options.worktreeRoot
-    this.#legacyWorktreeRoot = options.legacyWorktreeRoot ?? options.worktreeRoot ?? dshHomePath('plugins', 'dsh-claude', 'worktrees')
     this.#branchPrefix = options.branchPrefix ?? (async () => 'claude')
     this.#summarizeBranch = options.summarizeBranch ?? (async () => undefined)
     this.#cleanupGraceMs = options.cleanupGraceMs ?? CLEANUP_GRACE_MS
@@ -431,54 +425,7 @@ export class RepositorySetupService {
         }
       }
       if (changed) await this.#writeLeases(retained)
-      await this.#removeUnleasedDirectories(retained, active, now, archiveSessions)
     })
-  }
-
-  /** Remove leftover directories under the plugin's own worktree root that no
-   *  lease and no workspace claims and that are no longer checkouts (an IDE
-   *  folder outliving its worktree); otherwise nothing would ever sweep them.
-   *  The grace period covers the gap between `worktree add` and the lease
-   *  write, so a worktree being created right now is never taken. */
-  async #removeUnleasedDirectories(
-    retained: readonly WorktreeLease[],
-    active: ReadonlySet<string>,
-    now: number,
-    archiveSessions?: (worktreePath: string) => Promise<void>,
-  ): Promise<void> {
-    const leased = new Set(retained.map(item => comparablePath(item.path)))
-    let entries: string[]
-    try {
-      entries = await readdir(this.#legacyWorktreeRoot)
-    } catch {
-      return // no worktree root yet, or it is unreadable; nothing to sweep
-    }
-    for (const entry of entries) {
-      const path = join(this.#legacyWorktreeRoot, entry)
-      const key = comparablePath(path)
-      if (leased.has(key) || active.has(key)) continue
-      try {
-        const info = await stat(path)
-        if (!info.isDirectory()) continue
-        const created = info.birthtimeMs > 0 ? info.birthtimeMs : info.mtimeMs
-        // Date.now() truncates to whole milliseconds while birthtime carries a
-        // fraction, so a directory created moments ago can read as newer than
-        // the clock; clamp rather than let that skip a sweep.
-        if (Math.max(0, now - created) < this.#cleanupGraceMs) continue
-        // A live checkout no lease claims is Claude's own `git worktree add`
-        // next to the session's, with its pull request and maybe unpushed work.
-        // ponytail: a lease lost to a crash now leaks its worktree; `git worktree list` still names it.
-        if (await pathExists(join(path, '.git'))) continue
-        // A lost lease is still the user's deleted workspace: its sessions
-        // have to be archived here too, or the Host rebuilds the workspace
-        // from their headers on the next boot.
-        await archiveSessions?.(path).catch(() => undefined)
-        await rm(path, { recursive: true, force: true })
-      } catch {
-        // A directory that vanished under us, or one we may not remove; the
-        // next pass sees it again.
-      }
-    }
   }
 
   async #checkoutRemote(info: RepositoryBranchList, remoteBranch: string): Promise<RepositorySetupResult> {

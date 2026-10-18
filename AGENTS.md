@@ -1,6 +1,6 @@
 # Repository Instructions
 
-- This fork has exactly two jobs: follow `upstream/master`, and keep the fork's own features working. The merge procedure and the must-keep list live in `UPSTREAM-MERGE-NOTES.md`.
+- This fork has exactly two jobs: follow `upstream/master`, and keep the fork's own features working. Every rule for tracking upstream, the Host line and the Claude Code CLI, plus the must-keep list, lives in `MAINTENANCE.md`.
 - Keep this package out-of-tree: use only public DSH exports and do not patch the installed DSH checkout.
 - After a DSH Desktop upgrade, re-check the Host's own API by hand: it ships no type declarations, so `pnpm typecheck` cannot see drift. Locate the installed Host under `resources/app/node_modules/@deepseek-ai/` (or an extracted `app.asar`) and check the log for `dsh-claude client [boot-check]` / `[slot-entry-crashed]`.
 - Claude Code owns its internal loop and tools; DSH owns presentation, approval audit, and managed process lifetime.

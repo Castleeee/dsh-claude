@@ -1418,7 +1418,7 @@ export class ClaudeSupervisor {
     const cwd = agent.session.header.cwd ?? process.cwd()
     const input = new AsyncQueue<SDKUserMessage>()
     const lifetime = new AbortController()
-    const projection = await this.#sidecar.importLegacy(sessionId, agent.session.snapshotEvents())
+    const projection = await this.#sidecar.seedFromSessionEvents(sessionId, agent.session.snapshotEvents())
     if (signalAborted(signal) || signalAborted(cancellationSignal)) throw abortFailure()
     const binding = projection.binding
     // A rewound session resumes at the kept turn's chain anchor, or drops its

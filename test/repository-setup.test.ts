@@ -208,7 +208,7 @@ describe('repository setup service', () => {
       { stdout: '' },
     ])
     const fake = create()
-    const service = new RepositorySetupService(fake, { leasePath, legacyWorktreeRoot: worktreeRoot })
+    const service = new RepositorySetupService(fake, { leasePath })
     const result = await service.setup(root, 'main', true)
     expect(result.path.startsWith(join(root, '.claude', 'worktrees'))).toBe(true)
     expect(fake.spawn.mock.calls[6]?.[0].argv).toEqual([
@@ -216,7 +216,7 @@ describe('repository setup service', () => {
     ])
     expect(await readFile(exclude, 'utf8')).toBe('# local ignores\n*.log\n/.claude/worktrees/\n')
     // A second worktree does not add the line again.
-    await new RepositorySetupService(create(), { leasePath, legacyWorktreeRoot: worktreeRoot }).setup(root, 'main', true)
+    await new RepositorySetupService(create(), { leasePath }).setup(root, 'main', true)
     expect((await readFile(exclude, 'utf8')).match(/\/\.claude\/worktrees\//gu)).toHaveLength(1)
   })
 
@@ -572,60 +572,6 @@ describe('repository setup service', () => {
     // has to land before the directory does.
     expect(removedAtArchive[0]).toEqual([])
     expect(JSON.parse(await readFile(leasePath, 'utf8')).leases).toEqual([])
-  })
-
-  it('sweeps a worktree directory no lease and no workspace claims', async () => {
-    const { root, leasePath, worktreeRoot } = await roots()
-    const stranded = join(worktreeRoot, 'premier-store-os-20260828T085557Z-10bc6d37')
-    const claimed = join(worktreeRoot, 'still-a-workspace')
-    await mkdir(join(stranded, '.idea'), { recursive: true })
-    await mkdir(claimed, { recursive: true })
-
-    await new RepositorySetupService(runtime([]), { leasePath, worktreeRoot, cleanupGraceMs: 0 })
-      .cleanupOrphans([claimed])
-
-    expect(existsSync(stranded)).toBe(false)
-    expect(existsSync(claimed)).toBe(true)
-    expect(root.length).toBeGreaterThan(0)
-  })
-
-  it('keeps a live checkout under the worktree root that no lease claims', async () => {
-    const { leasePath, worktreeRoot } = await roots()
-    // Claude's own `git worktree add`, next to the session's worktree.
-    const checkout = join(worktreeRoot, 'premier-store-os-receivable-collector-role')
-    await mkdir(checkout, { recursive: true })
-    await writeFile(join(checkout, '.git'), 'gitdir: /repo/.git/worktrees/receivable-collector-role\n')
-    const archive = vi.fn(async () => {})
-
-    await new RepositorySetupService(runtime([]), { leasePath, worktreeRoot, cleanupGraceMs: 0 })
-      .cleanupOrphans([], archive)
-
-    expect(existsSync(checkout)).toBe(true)
-    expect(archive).not.toHaveBeenCalled()
-  })
-
-  it('archives the sessions of a swept directory whose lease is gone', async () => {
-    const { leasePath, worktreeRoot } = await roots()
-    const stranded = join(worktreeRoot, 'premier-store-os-20260828T063549Z-288afc2b')
-    await mkdir(stranded, { recursive: true })
-    const archive = vi.fn(async () => {})
-
-    await new RepositorySetupService(runtime([]), { leasePath, worktreeRoot, cleanupGraceMs: 0 })
-      .cleanupOrphans([], archive)
-
-    // Without this the directory goes and its sessions stay in the sidebar.
-    expect(archive).toHaveBeenCalledWith(stranded)
-    expect(existsSync(stranded)).toBe(false)
-  })
-
-  it('keeps a directory whose lease has not been written yet', async () => {
-    const { leasePath, worktreeRoot } = await roots()
-    const fresh = join(worktreeRoot, 'mid-creation')
-    await mkdir(fresh, { recursive: true })
-
-    await new RepositorySetupService(runtime([]), { leasePath, worktreeRoot }).cleanupOrphans([])
-
-    expect(existsSync(fresh)).toBe(true)
   })
 
   it('retains workspace-referenced and freshly created worktree leases', async () => {
