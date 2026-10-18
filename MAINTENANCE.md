@@ -189,6 +189,25 @@ src/repository-status-routes.ts
 **规则**：夹具必须是**原版（默认配置）** CLI 的 lineup；在代理后面抓到的结果不要提交，只当作
 "插件对某种拼写/形态是否健壮"的线索。
 
+### 模型名是透传的；多 provider（ccswitch 之类）怎么算
+
+**插件不改模型名。** 两层是分开的：
+
+- DSH 侧持久化的是 selector id（插件按 CLI 广告的 row 派生的键，用于显示与记忆）；
+- 真正发给 CLI 的是 **CLI 自己广告的那个 `value`**：`src/supervisor.ts` 里
+  `model: claudeModelValue(model)`，而 `claudeModelValue(id) = claudeModelRow(id)?.value ?? id`。
+
+所以 ccswitch / 代理怎么命名模型，插件就原样转发。lineup 的来源是**每次会话 initialize 时 CLI
+自己报的 `/model` 列表**（`recordClaudeModels(initialization.models)`），启动时还会用
+`probeClaudeModels` 先探一次。由此：
+
+- **切换 provider 后，开一个新的 Claude 会话**（或重启 Host）就会刷新 lineup；开着老会话时，
+  选择器里可能还残留上一个 provider 的模型行。
+- 持久化的选择若不在当前 lineup 里，请求会**退回 `default`**，而不是把不属于当前 provider 的
+  id 发出去（`preset-route` 的设计）。
+- 同一个别名（`opus`、`fable`…）在不同 provider 下可以映射到不同模型，那是配置的事。
+- 宽路由标记 `[1m]` / `[1M]` 两种拼写都已识别，**不需要为了插件统一大小写**（2026-10-18 修）。
+
 ---
 
 ## 5. 陷阱（踩过的，别再踩）
