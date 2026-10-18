@@ -74,7 +74,7 @@ until the App moves ahead. Then the checkout's older devDependencies are what
 Node resolves, the Host judges every public plugin incompatible, and Desktop
 starts with no window and no log. `pnpm pack` is what keeps `devDependencies`
 out of the install, so the tarball route cannot drift this way. Details:
-`MAINTENANCE.md` §5.1.
+`MAINTENANCE.md` §5.1 (in the repository; this package ships only the reader-facing docs).
 
 If a build is deliberately run beside a live profile, finish active turns first:
 a build can trigger a live client reload and interrupt projection subscriptions.
