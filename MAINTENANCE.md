@@ -212,6 +212,25 @@ src/repository-status-routes.ts
 
 ## 5. 陷阱（踩过的，别再踩）
 
+### 5.0 重建会把 `lib/` 清空——别让它撞上 App 启动
+
+`tsdown` 构建**先清空输出目录**再写文件。`link:` 模式下 App 在启动时直接从 checkout 的 `lib/`
+导入，所以如果 App 恰好在这个（几百毫秒~几秒的）窗口里启动，插件导入失败，**Host 会把它丢
+掉并且不会重试**。
+
+2026-10-18 踩过：一次被中断的构建留下空的 `lib/`，App 恰好此时重启 → 插件整个消失。
+
+**判据**（两条任选）：
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:<port>/plugins/dsh-claude/doctor?token=<token>"   # 404 = 没挂载
+```
+
+或在 DevTools/调试端口里读 `window.__DSH_BOOT__.entries`，没有 dsh-claude 就是没加载。
+
+**修法**：把 `lib/` 重新构建好，**重启 App**。实测重新 `pnpm add` 同一依赖**不能**让它重新挂载——
+Host 只在启动时激活插件（所以任何 `src/*.ts` 改动都需要重启；`src/client/**` 才可能热载）。
+
 ### 5.1 `link:` 的两面
 
 - **开发用**：`scripts/profile-mode.mjs link`，改完重建即可，是唯一的实时调试模式。
