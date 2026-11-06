@@ -22,7 +22,7 @@
  * boot, and the Host-side plugin activates with the profile.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -74,13 +74,25 @@ process.stdout.write(`dsh-claude: ${mode} -> ${spec}\n`)
 run('pnpm', ['add', spec], profileDir)
 
 // Verify what actually landed, the same two checks INSTALL.md asks a user to
-// run by hand: the installed version, and that no `@deepseek-ai` package came
-// along (a linked or packed install must never shadow the Host's own line).
+// run by hand: the installed version, and whether this install dragged Host
+// packages into the profile's resolution path. A profile may declare
+// `@deepseek-ai` plugins of its own -- a computer-use plugin does -- so the
+// question is not whether any are present, but whether any is there that the
+// profile never asked for. Only those shadow the Host's own line.
 const installedDir = join(profileDir, 'node_modules', ...manifest.name.split('/'))
 const installed = existsSync(join(installedDir, 'package.json'))
   ? JSON.parse(readFileSync(join(installedDir, 'package.json'), 'utf8')).version
   : '(missing)'
-const leaked = spawnSync('sh', ['-c', `ls ${JSON.stringify(join(profileDir, 'node_modules'))} | grep -c deepseek`], { encoding: 'utf8' })
-process.stdout.write(`dsh-claude: installed ${installed}; @deepseek-ai packages in the profile: ${(leaked.stdout ?? '0').trim()}\n`)
-if ((leaked.stdout ?? '0').trim() !== '0') process.stderr.write('dsh-claude: warning: the profile now carries @deepseek-ai packages of its own\n')
+// The invariant is about *this* install, not about the profile: a packed
+// install's runtime dependencies must not include the Host's own line. A
+// profile may legitimately carry `@deepseek-ai` plugins of its own (a
+// computer-use plugin does, with its transitive tree), which is why counting
+// the scope directory would only ever mislead.
+const installedManifest = existsSync(join(installedDir, 'package.json'))
+  ? JSON.parse(readFileSync(join(installedDir, 'package.json'), 'utf8'))
+  : {}
+const hostDeps = Object.keys({ ...installedManifest.dependencies, ...installedManifest.optionalDependencies })
+  .filter(name => name.startsWith('@deepseek-ai/'))
+process.stdout.write(`dsh-claude: installed ${installed}; Host packages this install pulls: ${hostDeps.length}\n`)
+if (hostDeps.length > 0) process.stderr.write(`dsh-claude: warning: this install pulls ${hostDeps.join(', ')} -- a packed install must never shadow the Host's own line\n`)
 process.stdout.write('dsh-claude: quit and reopen Desktop to load it\n')
