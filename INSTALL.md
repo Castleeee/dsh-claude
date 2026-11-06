@@ -19,17 +19,23 @@ If `dsh` is not on PATH, use that installation's CLI entry point instead.
 
 ## 2. Install the built tarball
 
-Fetch it from the release (stable, rebuilt by every push to `master`):
+Fetch it from the release (stable, rebuilt by every push to `master`) and install
+it either through Desktop's plugin manager (paste the URL) or from a terminal:
 
 ```sh
-dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
 
 Or install a file you were handed:
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
+
+`dsh plugin --profile desktop …` does not work: the CLI rejects any command aimed
+at the Electron-managed `desktop` profile (`profile "desktop" is managed
+exclusively by the Electron application`). Substitute your own profile directory
+when it is not `desktop`.
 
 Wait for the profile operation to finish, then quit Desktop completely and
 reopen it. Select **Claude** in a new session. The package's bundle patch
@@ -132,7 +138,7 @@ establish successful real authentication, approval, streaming, or resume.
 The bundle patch declares the preset, so removing the package removes it:
 
 ```sh
-dsh plugin --profile desktop remove @norman-else/dsh-claude
+cd ~/.dsh/profiles/desktop && pnpm remove @norman-else/dsh-claude
 ```
 
 Restart Desktop after uninstalling. Removing the plugin does not mean all Claude
@@ -166,3 +172,30 @@ Every mode ends with quitting and reopening Desktop; the client bundle is loaded
 at boot. The script prints the installed version and the count of
 `@deepseek-ai` packages inside the profile — that count must be `0`.
 
+## 8. Check for an update and upgrade
+
+The host's own "check for updates" reads **npm**, and this fork publishes on
+GitHub only, so it cannot find a newer build here. Ask the releases instead:
+
+```sh
+gh release list --repo Castleeee/dsh-claude | head -3
+```
+
+Install the newest asset over the current one — the dependency is replaced in
+place, so no removal is needed:
+
+```sh
+cd ~/.dsh/profiles/desktop && pnpm add \
+  https://github.com/Castleeee/dsh-claude/releases/download/<tag>/norman-else-dsh-claude-<tag>.tgz
+```
+
+Quit and reopen Desktop, then run the checks from §7: the dependency line must be
+the release URL rather than a `link:`, the profile must carry no
+`@deepseek-ai` packages, and the installed version must be the tag you asked for.
+
+Version tags roll: `v<version>` is re-cut in place, so one URL keeps serving that
+version's newest build, and a docs-only change never changes the URL. A new
+**version** changes it — hand the new URL to anyone who installed the old one.
+
+Maintainer-side, the four-line procedure (upstream, this fork's patches, the Host,
+and the local Claude Code) is `MAINTENANCE.md` §7.

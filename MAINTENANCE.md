@@ -285,8 +285,122 @@ env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy -u ALL_PROXY -u al
 - `agent-default-model` 的 provider/model
 - `ui-chat` / `ui-settings` / `ui-settings-account` 的界面设置
 
-profile 的依赖声明形如：
+profile 的依赖声明形如（正常态是 release URL；开发态才会是 `link:` / `file:`）：
 
 ```json
-"@norman-else/dsh-claude": "file:/Users/jack/.dsh/artifacts/norman-else-dsh-claude-<version>.tgz"
+"@norman-else/dsh-claude": "https://github.com/Castleeee/dsh-claude/releases/download/v<version>/norman-else-dsh-claude-<version>.tgz"
 ```
+
+
+---
+
+## 7. 四线升级流程（执行者手册：给大模型）
+
+**这不是脚本，也不是"跑一遍测试就算数"。** 执行者要自己取证、判断兼容性，把取舍交给人决定。
+
+硬规矩（都是前面踩出来的）：§0 全量合并不 cherry-pick；§3 冲突按表；§2 Host 必须与新 App 同线；§4 夹具必须在原版配置下抓。
+**三条硬闸门**：`pnpm check` 全绿、`git rev-list --count HEAD..upstream/master` 为 0、契约测试的版本断言与新 Host 一致。
+
+**必须问人、不许自己拍板的时刻**：
+
+- 上游改/删了我们 patch 覆盖的机制或 UI 结构；
+- Host 砍掉了我们依赖的插槽/服务，或某功能在新 Host 上语义变了；
+- CLI 移除了目录里的某个模型 id，或新增了需要跟进的能力（新权限模式等）；
+- 版本号的 base 要不要换、这次要不要发版；
+- 合并或适配后某个测试怎么改都不对（通常说明我们对它的理解有偏）。
+
+### 阶段 0：基线快照
+
+```sh
+git status --porcelain; git log -1 --format='%h %s'
+node -p "require('./package.json').version"
+defaults read /Applications/DeepSeek\ Harness.app/Contents/Info.plist CFBundleShortVersionString
+/Users/jack/.local/bin/claude --version
+ls test/fixtures/claude-lineups/
+git fetch upstream; git rev-list --count HEAD..upstream/master
+```
+
+记下五件事：本地版本、Host 版本、CLI 版本、最新夹具、落后上游提交数。后面所有结论都对着它比。
+
+### 阶段 1：① 上游 + ② 本地 patch（一起做）
+
+**先探查，再合并。**
+
+```sh
+git fetch upstream
+git log --oneline HEAD..upstream/master                 # 逐条读标题
+git diff --stat HEAD...upstream/master                  # 改动面
+git log --oneline HEAD..upstream/master -- <§3 里 ours 清单的文件>
+```
+
+判断三件事：
+
+1. **有没有破坏性变更**：插件插槽名、事件名、服务名、`ctx.get()` 的键、`declare module` 的 shape。
+2. **有没有撞我们 patch 的文件**：拿 §3 的 ours 清单与混合表交叉，列出"上游也动了我保留的文件"。
+3. **上游有没有删掉我们依赖的东西**（§3 的必保符号是否都还在）。
+
+然后按 §0 全量合并：
+
+```sh
+git merge --no-ff upstream/master
+```
+
+冲突按 §3：自己功能涉及的保留 ours，其余取 theirs；混合表逐块处理。解完 `pnpm check`（上游动过依赖就先 `pnpm install`）。
+
+**闸门**：`HEAD..upstream/master` 为 0，且测试全绿。
+
+### 阶段 2：③ Host（App 升级后必做）
+
+四处版本必须同时改到同一版本：`package.json` 的 78 个 devDeps、22 个 peers、`pnpm-workspace.yaml` 的 override、`test/package-contract.test.ts` 的断言。
+
+**探查，不只是改数字**：
+
+- **包清单**：看新 Host 里的 `@deepseek-ai/*`（`app.asar` 或 `resources/app/node_modules/`），与 devDeps 对照 → 新增的包要不要进 devDeps？删掉的还有谁在 import？
+- **运行期 API 漂移**：Host 不带类型声明，`pnpm typecheck` 看不见漂移 → 必须把插件装进新 App 跑一遍，看日志 `dsh-claude client [boot-check]` 与 `[slot-entry-crashed]`。
+- **客户端 shim**：`test/client-sidecar-conversation.test.ts` 的 `__ModuleLoader__` require 列表要跟 Host bundle 对齐（历史上漏过一次 `zod`）。
+- **适配热点**（0.2.0 撞过的）：`src/client/index.tsx` 的 slot 注册、dock 行布局（`ClaudeStatsPills` / `host-chrome.ts` / `styles.ts`）、上下文环归位（`ClaudeContextMeter.tsx`）；对应测试 `client-host-chrome`、`client-context-meter-seat`。
+- **供应链**：`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` → 把包加进 `minimumReleaseAgeExclude`（§5.3）。
+
+```sh
+pnpm install
+pnpm check
+```
+
+**闸门**：typecheck 0 错、契约测试过、两个适配测试过、profile 里 `@deepseek-ai` 数仍为 0。
+
+### 阶段 3：④ Claude Code CLI
+
+```sh
+/Users/jack/.local/bin/claude --version
+```
+
+比最新夹具新 → 抓夹具。**必须原版配置**（先把 cc-switch 切回官方/断开代理，否则抓到的是代理的模型表，见 §4）：
+
+```sh
+node --experimental-strip-types scripts/capture-model-lineup.mts
+pnpm test test/model-lineup-drift.test.ts
+```
+
+**闸门**：历史版本广告过的 id 仍可解析；宽路由 `[1m]` / `[1M]` 都认。
+
+**探查**：新模型/新别名/新路由拼写；CLI 是否新增了需要插件跟进的能力。
+
+### 阶段 4：收尾与发布
+
+- 版本号：真实改动才 bump；合并到新上游 base 后的第一次改动才换 base（`0.1.65-fork.N` → `0.1.66-fork.1`）。
+- 一次提交，提交信息里写清**四线各自的结论与证据**（提交号、文件、测试）。
+- `git push origin feature/latest` → 验证后 `git push origin feature/latest:master`（触发构建发布）。
+- 等 CI 绿；发布后**下载资产与本地构建逐字节比对** `lib`。
+- 本机切回 release 安装 + 重启 App + 三条自检（§1 的三种模式 + 本节报告模板）。
+- **只有 `version` 变了才换 URL**：要通知那些装了旧 URL 的人。
+
+### 报告模板（每次跑完交给人的东西）
+
+| 线 | 之前 | 之后 | 变了什么 | 影响我哪些功能 | 怎么处理 | 证据 |
+|---|---|---|---|---|---|---|
+| ① 上游 dsh-claude | | | | | | |
+| ② 本地 patch | | | | | | |
+| ③ DSH Host | | | | | | |
+| ④ Claude Code | | | | | | |
+
+表格下面再写两段：**闸门结果**（三条硬门槛各自的结论）、**决策记录**（问过什么、人怎么定的）。

@@ -41,14 +41,25 @@ local Claude Code CLI before using the plugin.
 Stable builds are published from `master`. This URL is stable across pushes —
 the release is re-cut in place, so it always points at the newest stable build:
 
-```sh
-dsh plugin --profile desktop add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
+https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
+```
+
+Paste it into Desktop's plugin manager, or install it from a terminal with pnpm
+in the profile directory:
+
+```sh
+cd ~/.dsh/profiles/desktop && pnpm add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
+```
+
+`dsh plugin --profile desktop …` cannot do this: the CLI rejects every command
+aimed at the Electron-managed `desktop` profile (`profile "desktop" is managed
+exclusively by the Electron application`).
 
 ### Install a tarball file you were given
 
 ```sh
-dsh plugin --profile desktop add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
 ```
 
 Quit Desktop completely, reopen it, then create a conversation and select
@@ -63,7 +74,7 @@ cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check                                   # typecheck + test + build, writes lib/
 pnpm pack --pack-destination .
-dsh plugin --profile desktop add "$PWD/norman-else-dsh-claude-0.1.65-fork.1.tgz"
+cd ~/.dsh/profiles/desktop && pnpm add "$OLDPWD/norman-else-dsh-claude-0.1.65-fork.1.tgz"
 ```
 
 Then quit Desktop completely, reopen it, and select **Claude** in a new
@@ -96,7 +107,7 @@ Details, including when a linked checkout is unsafe, are in `INSTALL.md` §7 and
 The Claude preset is declared by the package's bundle patch, so removing the package removes it:
 
 ```sh
-dsh plugin --profile desktop remove @norman-else/dsh-claude
+cd ~/.dsh/profiles/desktop && pnpm remove @norman-else/dsh-claude
 ```
 
 ## 3. Features
@@ -153,7 +164,7 @@ dsh plugin --profile desktop remove @norman-else/dsh-claude
 - **Claude Code settings and Doctor** — Adds a Settings panel for runtime diagnostics, supported Claude settings, output style, AI output renderer, session alerts, worktree branch prefix, process limits, and authentication and handshake status.
 - **Plan usage** — Reports the signed-in subscription's utilization windows — five-hour, weekly across all models, and weekly per model — with reset countdowns, degrading to unavailable rather than failing on API-key, Bedrock, and Vertex sessions.
 - **Bounded requests and a rationed connection pool** — Caps the plugin's share of the browser's per-origin connections so its own panels can never starve each other or the Host, and gives every route a declared time budget — answers from memory, local Git work, and calls that reach the network each get their own — with the client waiting one round trip longer than the server, so a slow operation reports which budget elapsed instead of hanging in the browser's queue.
-- **Plugin updates** — Checks npm for new releases and updates in place, only when the installation is uniquely identified; local development links are never replaced.
+- **Plugin updates** — Checks npm for new releases and updates in place, only when the installation is uniquely identified; local development links are never replaced. This fork publishes on GitHub only, so that check cannot see its releases — see `INSTALL.md` §8 for the update procedure.
 - **Declared Claude preset** — The bundle patch declares the Claude preset as an `@deepseek-ai/dsh-agent-preset` row; its route reuses the active profile package source, so no second client-module Loader appears.
 
 ## 4. Contributing
