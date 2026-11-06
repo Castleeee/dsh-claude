@@ -24,7 +24,7 @@ import { resolveClaudeExecutable } from './executable.ts'
 import { ClaudeProcessLimitError, ClaudeTurnBusyError, ClaudeSupervisor, type ClaudeSteeringOutcome, type ClaudeSteeringService } from './supervisor.ts'
 import { createClaudeCodeAdapter } from './adapter.ts'
 import { mountClaudeSteering } from './steering.ts'
-import { claudeBridgeDiagnostics, registerClaudeDoctorRoutes, type ClaudeBridgeDiagnostic } from './doctor-routes.ts'
+import { claudeBridgeDiagnostics, registerClaudeDoctorRoutes, type ClaudeBootFailure, type ClaudeBridgeDiagnostic } from './doctor-routes.ts'
 import { registerClaudeProjectionRoute } from './projection-routes.ts'
 import { RepositoryStatusService, type RepositoryStatus } from './repository-status.ts'
 import type { ClaudeActivityEvent } from './events.ts'
@@ -64,6 +64,7 @@ import { detectWindowsSystemProxy, withSystemProxy, type ProxyEnv } from './syst
 import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usage.ts'
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
+import { createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
 import { readDefaultPermissionMode, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
 import { ClaudeWorldStore, PERMISSION_NS } from './world-store.ts'
 import { ClaudeWorldSwitch, worldSettingsGateway } from './world-switch.ts'
@@ -333,7 +334,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // turn's own prompt does, so its image limits and file wording cannot drift.
     attachments: ctx.attachments,
   })
-  let resolutionError: unknown
+  // Which boot step failed decides what the Doctor reports: only a failed
+  // resolution means the executable is missing.
+  let bootFailure: ClaudeBootFailure | undefined
+  let executableResolved = false
   try {
     const resolution = await resolveClaudeExecutable(
       subprocess,
@@ -342,6 +346,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         : config.executablePath,
     )
     supervisorConfig.executablePath = resolution.path
+    executableResolved = true
     ctx.llm.registerAdapter(
       [...CLAUDE_CODE_PROVIDER_IDS],
       createClaudeCodeAdapter(supervisor, ctx.agents, ctx.attachments, agent => ctx.agentPresets.composedPreset(agent.ctx), sessionId => reviewComments.drain(sessionId), () => readRenderMode(), request => summarizeSessionTitle(supervisorConfig.executablePath, request), () => probeClaudeModels(supervisorConfig.executablePath)),
@@ -583,8 +588,70 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         mounted.clear()
       }
     }, 'dsh-claude: metadata bridges')
+    // A preset carries no model, so a blank session switched to or created
+    // under one preset can still sit on the other side's model. Move it over
+    // through the session controller, the only writer that keeps the Host's
+    // per-session selection cache in step with the logged pick.
+    ctx.effect(() => {
+      type Selection = ModelSelection
+      const agentOf = (sessionId: string) => ctx.agents.get(sessionId as never)
+      const defaults = () => ctx.get('agentDefaultModel') as { currentSelection(): Selection } | undefined
+      const sync = createPresetModelSync({
+        currentSelection: sessionId => {
+          const agent = agentOf(sessionId)
+          const projections = ctx.get('sessionProjections') as { stateOf(session: unknown, name: string): { pending: Selection | null } | undefined } | undefined
+          const pending = agent === undefined ? undefined : projections?.stateOf(agent.session, 'modelSelection')?.pending
+          return pending ?? defaults()?.currentSelection()
+        },
+        isBlank: sessionId => {
+          const session = agentOf(sessionId)?.session as { header: { origin?: string; parentSession?: string }; requestHeader?(): unknown } | undefined
+          // Subagents follow their parent; the controller refuses to select for them.
+          if (session === undefined || session.header.origin === 'subagent' || session.header.parentSession !== undefined) return false
+          return session.requestHeader?.() === undefined
+        },
+        selectModel: async request => {
+          const controller = ctx.get('sessionController') as { selectModel(request: { sessionId: string } & Selection): Promise<unknown> } | undefined
+          if (controller === undefined) throw new Error('the Host mounts no session controller')
+          return controller.selectModel(request)
+        },
+        fallbackOtherModel: async () => {
+          for (const provider of ctx.llm.listProviders()) {
+            if ((CLAUDE_CODE_PROVIDER_IDS as readonly string[]).includes(provider.id)) continue
+            const models = await ctx.llm.listModels(provider.id).catch(() => [])
+            if (models[0] !== undefined) return { provider: provider.id, model: models[0].id }
+          }
+          return undefined
+        },
+        defaultClaudeModel: () => supervisorConfig.defaultModel,
+        warn: message => { ctx.logger.warn(message) },
+      })
+      sync.remember(defaults()?.currentSelection())
+      const onPresetSelected = ctx.on as (event: 'agent-preset/selected', handler: (sessionId: string, preset: string) => void) => () => void
+      const stopSelected = onPresetSelected('agent-preset/selected', (sessionId, preset) => {
+        void sync.sync(sessionId, preset)
+      })
+      // A new session records its preset in its header, not as a selection
+      // event, and its composition lands after agent/created: wait for it.
+      const stopCreated = ctx.on('agent/created', ({ agent }) => {
+        let attempts = 0
+        const check = (): void => {
+          const preset = ctx.agentPresets.composedPreset(agent.ctx)
+          if (preset !== undefined) {
+            void sync.sync(agent.id as string, preset)
+            return
+          }
+          if (++attempts < 25) setTimeout(check, 200).unref?.()
+        }
+        check()
+        return undefined
+      })
+      return () => {
+        stopSelected()
+        stopCreated()
+      }
+    }, 'dsh-claude: preset model sync')
   } catch (error) {
-    resolutionError = error
+    bootFailure = { step: executableResolved ? 'initialization' : 'executable', error }
   }
   ctx.on('agent/disposed', async ({ agent }) => {
     reviewComments.disposeSession(agent.id as string)
@@ -654,7 +721,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => () => repositoryStatus.dispose(), 'dsh-claude: repository status cache')
   ctx.inject(['webServer'], webCtx => {
     registerClaudeClientDiagnosticsRoute(webCtx)
-    registerClaudeDoctorRoutes(webCtx, subprocess, supervisor, supervisorConfig, resolutionError)
+    registerClaudeDoctorRoutes(webCtx, subprocess, supervisor, supervisorConfig, bootFailure)
     const desktopActions = webCtx.get('desktopActions') as { requestRestart?: () => void } | undefined
     registerClaudeUpdateRoutes(webCtx, subprocess, {
       ...(typeof desktopActions?.requestRestart === 'function'
