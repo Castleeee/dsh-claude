@@ -42,7 +42,7 @@ git merge-base HEAD upstream/master            # → 等于 upstream/master 的 
 
 | | |
 |---|---|
-| 版本号 | `0.1.65-fork.N` —— 自有序列，base 跟上游走（合并上游 0.1.65 后的第一次真实改动即 `0.1.65-fork.1`）。**纯文档改动不 bump** |
+| 版本号 | `0.1.67-fork.N` —— 自有序列，base 跟上游走（合并上游 0.1.67 后的第一次改动即 `0.1.67-fork.1`）。**纯文档改动不 bump** |
 | `master` | 稳定线，默认分支。**只有它的 push / merge 触发构建与发布** |
 | `feature/latest` | 开发线，不发布 |
 | 发布 | `.github/workflows/release.yml`：`pnpm check` → `pnpm pack` → 重切 `v<version>` 滚动 tag |
@@ -188,6 +188,16 @@ src/repository-status-routes.ts
 
 **规则**：夹具必须是**原版（默认配置）** CLI 的 lineup；在代理后面抓到的结果不要提交，只当作
 "插件对某种拼写/形态是否健壮"的线索。
+
+### 坑二：这台机器上抓不出「可信的」CLI 2.1.318 夹具（2026-11-06）
+
+用隔离配置（`CLAUDE_CONFIG_DIR` 指向空目录 / 只留 base URL + token）抓 2.1.318，得到的是 **5 个基础模型**（`default/opus/fable/sonnet/haiku`），
+**没有 `[1m]` 行**——因此 drift test 会把 `fable[1m]` 判成 stranded（假警报）。带不带鉴权结果都一样，说明是这个 relay
+（`opencode.ai/zen/go`）让 CLI 不广告 1M 变体，而不是登录状态。
+
+**结论**：本机没有真实 Anthropic 账号，抓不出原版 2.1.318 夹具 → 不提交，夹具仍停在 2.1.280/2.1.283。
+要补夹具只能在**真实账号 + 原版配置**的机器上抓。另外注意 2.1.318 的 resolved id 命名变了
+（`claude-opus-5` → `claude-opus-5-5`、`claude-fable-5-1` 等），我们的 SEED 兜底仍是旧拼写；有真实 lineup 时会用 CLI 自己的行，影响很小。
 
 ### 模型名是透传的；多 provider（ccswitch 之类）怎么算
 
@@ -387,7 +397,7 @@ pnpm test test/model-lineup-drift.test.ts
 
 ### 阶段 4：收尾与发布
 
-- 版本号：真实改动才 bump；合并到新上游 base 后的第一次改动才换 base（`0.1.65-fork.N` → `0.1.66-fork.1`）。
+- 版本号：真实改动才 bump；合并到新上游 base 后的第一次改动才换 base（`<旧 base>-fork.N` → `<新 base>-fork.1`，例：合并 0.1.67 后从 `0.1.65-fork.N` 换成 `0.1.67-fork.1`）。
 - 一次提交，提交信息里写清**四线各自的结论与证据**（提交号、文件、测试）。
 - `git push origin feature/latest` → 验证后 `git push origin feature/latest:master`（触发构建发布）。
 - 等 CI 绿；发布后**下载资产与本地构建逐字节比对** `lib`。

@@ -41,14 +41,14 @@ Stable builds are published from `master`. This URL is stable across pushes —
 the release is re-cut in place, so it always points at the newest stable build:
 
 ```
-https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
+https://github.com/Castleeee/dsh-claude/releases/download/v0.1.67-fork.1/norman-else-dsh-claude-0.1.67-fork.1.tgz
 ```
 
 Paste it into Desktop's plugin manager, or install it from a terminal with pnpm
 in the profile directory:
 
 ```sh
-cd ~/.dsh/profiles/desktop && pnpm add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.67-fork.1/norman-else-dsh-claude-0.1.67-fork.1.tgz
 ```
 
 `dsh plugin --profile desktop …` cannot do this: the CLI rejects every command
@@ -58,7 +58,7 @@ exclusively by the Electron application`).
 ### Install a tarball file you were given
 
 ```sh
-cd ~/.dsh/profiles/desktop && pnpm add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add /absolute/path/to/norman-else-dsh-claude-0.1.67-fork.1.tgz
 ```
 
 Quit Desktop completely, reopen it, then create a conversation and select
@@ -73,7 +73,7 @@ cd dsh-claude
 pnpm install --frozen-lockfile
 pnpm check                                   # typecheck + test + build, writes lib/
 pnpm pack --pack-destination .
-cd ~/.dsh/profiles/desktop && pnpm add "$OLDPWD/norman-else-dsh-claude-0.1.65-fork.1.tgz"
+cd ~/.dsh/profiles/desktop && pnpm add "$OLDPWD/norman-else-dsh-claude-0.1.67-fork.1.tgz"
 ```
 
 Then quit Desktop completely, reopen it, and select **Claude** in a new

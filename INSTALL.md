@@ -1,6 +1,6 @@
 # Installation and removal runbook
 
-Current guidance: 2026-10-18, fork plugin `0.1.65-fork.1`, Host `0.2.1-rc.2` line.
+Current guidance: 2026-11-06, fork plugin `0.1.67-fork.1`, Host `0.2.1-rc.2` line.
 Repo: `Castleeee/dsh-claude` (fork of `Norman-else/dsh-claude`). `master` is the
 stable line and the default branch — every push or merge there builds and
 re-cuts the release, and that release is what gets installed. `feature/latest`
@@ -23,13 +23,13 @@ Fetch it from the release (stable, rebuilt by every push to `master`) and instal
 it either through Desktop's plugin manager (paste the URL) or from a terminal:
 
 ```sh
-cd ~/.dsh/profiles/desktop && pnpm add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.65-fork.1/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add https://github.com/Castleeee/dsh-claude/releases/download/v0.1.67-fork.1/norman-else-dsh-claude-0.1.67-fork.1.tgz
 ```
 
 Or install a file you were handed:
 
 ```sh
-cd ~/.dsh/profiles/desktop && pnpm add /absolute/path/to/norman-else-dsh-claude-0.1.65-fork.1.tgz
+cd ~/.dsh/profiles/desktop && pnpm add /absolute/path/to/norman-else-dsh-claude-0.1.67-fork.1.tgz
 ```
 
 `dsh plugin --profile desktop …` does not work: the CLI rejects any command aimed
